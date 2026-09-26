@@ -22,7 +22,7 @@ from datetime import date
 
 # Sobe quando o pedido à IA muda: a assinatura muda junto e os resumos são
 # refeitos. 2 = 26/09/2026, depois dos resumos cortados pelo max_tokens.
-VERSAO_RESUMO = 2
+VERSAO_RESUMO = 3  # 3 = data de hoje, agenda passada/futura e estágio por extenso (26/09/2026)
 MAX_INTIMACOES = 12
 MAX_MOVIMENTOS = 25
 MAX_NOTAS = 6
@@ -188,9 +188,24 @@ def _notas(bruto) -> list[dict]:
     return out
 
 
+ESTAGIO_POR_EXTENSO = {
+    "distribuido": "distribuído, aguardando citação", "citacao": "citação", "conciliacao": "conciliação marcada",
+    "contestacao": "conciliação já realizada; fase de defesa/contestação", "instrucao": "instrução (provas)",
+    "aguardando_sentenca": "aguardando sentença (defesa e provas encerradas)", "andamento": "em andamento",
+    "sentenca": "sentenciado", "recurso": "em recurso", "cumprimento": "cumprimento de sentença / execução",
+    "arquivado": "arquivado",
+}
+
+
 def entradas(proc: dict, analise: dict, ficha: dict, intimacoes: list[dict], movimentos: list[dict],
-             prazos: list[dict], agenda: list[dict], acordos: list[dict], notas) -> dict:
-    """Tudo o que o resumo leva em conta, já cortado e em ordem estável."""
+             prazos: list[dict], agenda: list[dict], acordos: list[dict], notas, hoje: date | None = None) -> dict:
+    """Tudo o que o resumo leva em conta, já cortado e em ordem estável.
+
+    A agenda sai marcada como já ocorrida ou marcada em relação a HOJE: o
+    compromisso fica "pendente" na agenda mesmo depois de acontecer, e o
+    resumo da Juliana (26/09) mandou "comparecer à audiência de 18/09". Como a
+    marca entra na assinatura, o resumo é refeito sozinho quando a audiência passa."""
+    hoje = hoje or date.today()
     ints = sorted(intimacoes, key=lambda i: (i.get("data") or "", i.get("id") or ""), reverse=True)[:MAX_INTIMACOES]
     movs = sorted(movimentos, key=lambda m: m.get("dataHora") or "", reverse=True)[:MAX_MOVIMENTOS]
     return {
@@ -205,8 +220,9 @@ def entradas(proc: dict, analise: dict, ficha: dict, intimacoes: list[dict], mov
         "movimentos": [{"data": (m.get("dataHora") or "")[:10], "nome": m.get("nome")} for m in movs],
         "prazos": sorted([{"titulo": p.get("title"), "vence": (p.get("due_date") or "")[:10], "status": p.get("status")}
                           for p in prazos], key=lambda p: (p["vence"], p["titulo"] or "")),
-        "agenda": sorted([{"quando": (a.get("quando") or "")[:16], "titulo": a.get("titulo"), "status": a.get("status")}
-                          for a in agenda], key=lambda a: a["quando"]),
+        "agenda": sorted([{"quando": _quando_local(a.get("quando")), "titulo": a.get("titulo"),
+                           "ja_ocorreu": (a.get("quando") or "")[:10] < hoje.isoformat()}
+                          for a in agenda if "cancel" not in (a.get("status") or "")], key=lambda a: a["quando"]),
         "pagamentos": sorted([{"valor": a.get("total_value"), "status": a.get("status"),
                                "parcelas": sorted([(p.get("status"), (p.get("payment_date") or "")[:10], p.get("paid_value"))
                                                    for p in a.get("parcelas") or []], key=str)}
@@ -214,6 +230,18 @@ def entradas(proc: dict, analise: dict, ficha: dict, intimacoes: list[dict], mov
         "notas": [{"quando": (n.get("quando") or "")[:16], "texto": _limpo(n.get("texto"), 400)}
                   for n in _notas(notas)][-MAX_NOTAS:],
     }
+
+
+def _quando_local(v) -> str:
+    """Início do compromisso em Cuiabá (UTC-4), "2026-11-18 10:00"."""
+    from datetime import datetime, timedelta
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return (str(v) or "")[:16]
+    if d.tzinfo:
+        d = d.replace(tzinfo=None) - timedelta(hours=4)
+    return d.strftime("%Y-%m-%d %H:%M")
 
 
 def assinatura(e: dict) -> str:
@@ -234,10 +262,12 @@ REGRAS ABSOLUTAS:
 7. O próximo passo recomendado deve ser conservador e aderente ao histórico real. Se faltarem elementos para uma providência ativa, recomende apenas acompanhar o andamento.
 8. Cite a data (dd/mm/aaaa) do evento que embasa cada afirmação dentro da própria frase. Nunca acrescente sufixos rotulados entre parênteses.
 9. Não repita a mesma informação.
-10. A agenda, os prazos, os pagamentos e as notas são do escritório: use-os (audiência marcada, prazo em aberto, valor recebido), mas não os confunda com atos do tribunal."""
+10. A agenda, os prazos, os pagamentos e as notas são do escritório: use-os (audiência marcada, prazo em aberto, valor recebido), mas não os confunda com atos do tribunal.
+11. Considere a DATA DE HOJE informada. Compromisso marcado como "JÁ OCORREU" aconteceu: nunca recomende comparecer a ele nem o trate como futuro.
+12. O ESTÁGIO informado foi apurado pelo sistema a partir de todas as fontes: a fase atual do seu texto deve ser esse estágio."""
 
 
-def prompt(e: dict) -> str:
+def prompt(e: dict, hoje: date | None = None) -> str:
     f, p = e["ficha"], e["processo"]
     aud = f.get("proxima_audiencia") or {}
     linhas = [
@@ -245,7 +275,9 @@ def prompt(e: dict) -> str:
         f"POLO ATIVO: {f.get('polo_ativo') or p.get('cliente') or 'não identificado'}",
         f"POLO PASSIVO: {f.get('polo_passivo') or 'não identificado'}",
         f"ÓRGÃO: {f.get('orgao') or 'não informado'} | CLASSE: {f.get('classe') or 'não informada'}",
-        f"ESTÁGIO (análise do andamento): {f.get('fase') or 'indefinido'} | SITUAÇÃO: {f.get('situacao') or '-'}",
+        f"DATA DE HOJE: {(hoje or date.today()).strftime('%d/%m/%Y')}",
+        f"ESTÁGIO ATUAL (apurado pelo sistema): {ESTAGIO_POR_EXTENSO.get(f.get('fase') or '', f.get('fase') or 'indefinido')}"
+        f" | SITUAÇÃO: {f.get('situacao') or '-'}",
     ]
     if aud:
         linhas.append(f"PRÓXIMA AUDIÊNCIA: {aud.get('tipo')} em {aud.get('data') or 'data não informada'}")
@@ -266,7 +298,7 @@ def prompt(e: dict) -> str:
         linhas += [f"[{x['vence']}] {x['titulo']} ({x['status']})" for x in e["prazos"]]
     if e["agenda"]:
         linhas.append("\n=== AUDIÊNCIAS NA AGENDA DO ESCRITÓRIO ===")
-        linhas += [f"[{a['quando']}] {a['titulo']} ({a['status']})" for a in e["agenda"]]
+        linhas += [f"[{a['quando']}] {a['titulo']} ({'JÁ OCORREU' if a['ja_ocorreu'] else 'marcado'})" for a in e["agenda"]]
     if e["pagamentos"]:
         linhas.append("\n=== FINANCEIRO (acordos/recebimentos lançados) ===")
         for a in e["pagamentos"]:

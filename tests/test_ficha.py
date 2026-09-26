@@ -208,3 +208,24 @@ def test_limpeza_das_partes():
                                 "PEDRO RODRIGUES MONTALVAO NETO - MT30021-A"]) == ["N. E. S. D. Q."]
     # O advogado pode ser parte de verdade (1038323-66: "POLO PASSIVO: REU: PEDRO ...").
     assert ficha.limpar_partes(["PEDRO RODRIGUES MONTALVAO NETO"]) == ["PEDRO RODRIGUES MONTALVAO NETO"]
+
+
+def test_resumo_sabe_o_que_ja_aconteceu():
+    # Juliana (26/09/2026): o resumo mandava "comparecer à audiência de 18/09".
+    e = ficha.entradas({"codigo": "x"}, {}, {"fase": "aguardando_sentenca"}, [], [], [],
+                       [{"quando": "2026-09-18T22:00:00+00:00", "titulo": "Audiência Online — JULIANA", "status": "pendente"},
+                        {"quando": "2026-11-18T14:00:00+00:00", "titulo": "AUDIÊNCIA X", "status": "pendente"}],
+                       [], None, HOJE)
+    p = ficha.prompt(e, HOJE)
+    assert "DATA DE HOJE: 26/09/2026" in p
+    assert "[2026-09-18 18:00] Audiência Online — JULIANA (JÁ OCORREU)" in p
+    assert "[2026-11-18 10:00] AUDIÊNCIA X (marcado)" in p
+    assert "aguardando sentença" in p
+    # A data sozinha não muda a assinatura (senão refaria tudo todo dia) ...
+    assert ficha.assinatura(e) == ficha.assinatura(ficha.entradas({"codigo": "x"}, {}, {"fase": "aguardando_sentenca"}, [], [], [],
+        [{"quando": "2026-09-18T22:00:00+00:00", "titulo": "Audiência Online — JULIANA", "status": "pendente"},
+         {"quando": "2026-11-18T14:00:00+00:00", "titulo": "AUDIÊNCIA X", "status": "pendente"}], [], None, date(2026, 9, 27)))
+    # ... mas a audiência passar muda.
+    depois = ficha.entradas({"codigo": "x"}, {}, {"fase": "aguardando_sentenca"}, [], [], [],
+        [{"quando": "2026-11-18T14:00:00+00:00", "titulo": "AUDIÊNCIA X", "status": "pendente"}], [], None, date(2026, 11, 19))
+    assert depois["agenda"][0]["ja_ocorreu"] is True

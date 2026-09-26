@@ -480,7 +480,7 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
         e = ficha_mod.entradas({"codigo": proc.codigo, "area": d.get("area"), "cliente": nomes.get(proc.client_id)},
                                analise, f, d.get("intimacoes") or [], movs,
                                _prazos_que_contam(d.get("prazos") or [], hoje), agenda.get(proc.id) or [],
-                               financeiro.get(proc.id) or [], d.get("notas"))
+                               financeiro.get(proc.id) or [], d.get("notas"), hoje)
         linha = {"process_id": proc.id, **f, "atualizado_em": agora}
         linhas.append(linha)
         ass = ficha_mod.assinatura(e)
@@ -504,7 +504,7 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
     ia_http = httpx.Client(timeout=120)
     for _, pid, e, ass in a_resumir[:limite]:
         try:
-            texto = gerar_resumo(cfg, ficha_mod.prompt(e), ia_http)
+            texto = gerar_resumo(cfg, ficha_mod.prompt(e, hoje), ia_http)
         except Exception as erro:  # noqa: BLE001 — um processo não derruba os outros
             log.warning("resumo falhou em %s: %s", pid[:8], erro)
             resumo.setdefault("falhas", 0)
