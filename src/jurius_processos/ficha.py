@@ -143,6 +143,52 @@ def partes_do_texto(textos: list[str | None]) -> dict[str, list[str]]:
     return out
 
 
+# ── Área do processo ────────────────────────────────────────────────────────
+# O CRM chutava pelo segmento do número CNJ e toda a Justiça Estadual virava
+# "cível" — inclusive o consumidor dos Juizados (26/09/2026: TAM, Nubank,
+# Energisa, Agibank... como "cível"). Aqui: assuntos do DataJud (TPU), classe e réu.
+_ASSUNTOS_CONSUMIDOR = {1156, 6220, 6226, 7771, 7772, 7773, 7774, 7775, 7776, 7777, 7778, 7779, 7780, 10598}
+_TEXTO_CONSUMIDOR = re.compile(r"consumidor|fornecedor|cadastro de inadimplentes|protesto indevido", re.IGNORECASE)
+# Sem "deficiente": "Reserva de Vagas para Deficientes" é concurso (1012767-44).
+_TEXTO_PREVIDENCIA = re.compile(r"benef[íi]cio|aux[íi]lio|aposentadoria|\bbpc\b|loas|pens[ãa]o por morte|"
+                                r"sal[áa]rio[- ]maternidade|incapacidade", re.IGNORECASE)
+_TEXTO_FAMILIA = re.compile(r"alimentos|div[óo]rcio|guarda|uni[ãa]o est[áa]vel|fam[íi]lia|regulamenta[çc][ãa]o de visitas|"
+                            r"invent[áa]rio|partilha", re.IGNORECASE)
+_EMPRESA = re.compile(r"\bS[./]?A\b|\bLTDA\b|\bEIRELI\b|\bME\b|BANCO|SEGUR|PAGAMENTO|INSTITUI[ÇC][ÃA]O DE PAGAMENTO|"
+                      r"ENERGI|TELEF|TELECOM|CONCESSION|[ÁA]GUAS|LINHAS A[ÉE]REAS|COMPANHIA|CIA\b", re.IGNORECASE)
+_ENTE_PUBLICO = re.compile(r"ESTADO DE|MUNIC[ÍI]PIO|INSTITUTO NACIONAL DO SEGURO|\bINSS\b|UNI[ÃA]O FEDERAL|FAZENDA|PREFEITURA",
+                           re.IGNORECASE)
+
+
+def area_provavel(numero: str | None, instancias: list[dict], partes: dict | None,
+                  djen: list[str | None] | None = None) -> str:
+    """trabalhista | previdenciario | familia | consumidor | civel.
+
+    djen: classes e órgãos das intimações — processo sem DataJud (ou com a
+    classe só no DJEN) ainda tem "Juizado Especial Cível" por ali."""
+    digitos = re.sub(r"\D", "", numero or "")
+    justica = digitos[13] if len(digitos) == 20 else ""
+    assuntos = [a for i in instancias or [] for a in (i.get("assuntos") or []) if isinstance(a, dict)]
+    nomes = " ".join(str(a.get("nome") or "") for a in assuntos)
+    classes = " ".join([str((i.get("classe") or {}).get("nome") or "") for i in instancias or []]
+                       + [str((i.get("orgaoJulgador") or {}).get("nome") or "") for i in instancias or []]
+                       + [str(x or "") for x in djen or []])
+    reus = " ".join((partes or {}).get("P") or [])
+    if justica == "5":
+        return "trabalhista"
+    if justica == "4" or _TEXTO_PREVIDENCIA.search(nomes) or re.search(r"SEGURO SOCIAL|\bINSS\b", reus):
+        return "previdenciario"
+    if _TEXTO_FAMILIA.search(nomes) or _TEXTO_FAMILIA.search(classes):
+        return "familia"
+    if any(a.get("codigo") in _ASSUNTOS_CONSUMIDOR for a in assuntos) or _TEXTO_CONSUMIDOR.search(nomes):
+        return "consumidor"
+    # Juizado Especial Cível / Recurso Inominado contra empresa: na prática, consumidor.
+    if re.search(r"juizado especial c[íi]vel|recurso inominado", classes, re.IGNORECASE) \
+            and _EMPRESA.search(reus) and not _ENTE_PUBLICO.search(reus):
+        return "consumidor"
+    return "civel"
+
+
 def montar(analise: dict, vinculo: dict, hoje: date, orgaos: list[str | None] | None = None,
            textos: list[str | None] | None = None) -> dict:
     """As colunas de process_insights que não dependem de IA. orgaos: os das

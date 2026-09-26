@@ -173,8 +173,9 @@ class CRM:
         {process_id: {area, notas, intimacoes, prazos}}. Uma consulta por tabela
         (e não por processo): o ciclo lê os ~200 processos de uma vez."""
         out: dict[str, dict] = {}
-        for p in self._tudo("processes", "id,practice_area,notes"):
-            out[p["id"]] = {"area": p.get("practice_area"), "notas": p.get("notes"), "intimacoes": [], "prazos": []}
+        for p in self._tudo("processes", "id,practice_area,notes,court"):
+            out[p["id"]] = {"area": p.get("practice_area"), "notas": p.get("notes"), "intimacoes": [], "prazos": [],
+                            "vara": p.get("court")}
         for i in self._tudo("djen_comunicacoes",
                             "id,process_id,data_disponibilizacao,tipo_documento,texto,created_at,"
                             "intimation_ai_analysis(summary,deadline_days,deadline_due_date,urgency)",

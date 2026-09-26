@@ -55,8 +55,11 @@ def test_intimacao_nova_entra_uma_vez_e_a_antiga_nao(tmp_path, cfg, monkeypatch)
     ligar(monkeypatch, sup)
     r = alimentar.intimacoes(b, cfg, [proc("p1", n, "1111111-11.1111.1.11.1111")], aplicar=True, hoje=date(2026, 9, 26))
     assert r["novas"] == 1
-    posts = [e for e in sup.escritas if e[0] == "POST"]
+    posts = [e for e in sup.escritas if e[0] == "POST" and e[1] == "djen_comunicacoes"]
     assert len(posts) == 1 and posts[0][2]["on_conflict"] == "hash"
+    # O card "Sincronização DJEN" continua vivo com o cron 5 desligado.
+    [hist] = [e[3] for e in sup.escritas if e[1] == "djen_sync_history"]
+    assert hist["source"] == "jurius-processos" and hist["items_saved"] == 1 and hist["success"] is True
     linha = posts[0][3][0]
     assert linha["hash"] == "novo" and linha["process_id"] == "p1" and linha["client_id"] == "c1"
     # marca de sincronização no processo, nunca o status

@@ -64,6 +64,7 @@ def _linha_acervo(p: dict) -> dict:
         # usando só v["partes"] (destinatários), que é o dado mais seguro.
         "partes": p.get("partes_tela") or v.get("partes") or {},
         "parte_principal": v.get("parte_principal"),
+        "area": p.get("area"),
         "vinculo_tipo": v.get("tipo"),
         "client_id": v.get("client_id"),
         "crm_process_id": v.get("crm_process_id"),
@@ -84,6 +85,10 @@ def planejar(banco: Banco, crm_processos, somente: list[str] | None = None,
         p = dict(r)
         p["a"], p["v"] = json.loads(p["analise"]), json.loads(p["vinculo"])
         p["partes_tela"] = partes_para_tela(p["v"].get("partes") or {}, [c["texto"] for c in banco.comunicacoes(p["numero"])])
+        from .ficha import area_provavel
+        coms = banco.comunicacoes(p["numero"])
+        p["area"] = area_provavel(p["numero"], json.loads(p.get("datajud") or "[]"), p["partes_tela"],
+                                  [c["classe"] for c in coms] + [c["orgao"] for c in coms])
         procs.append(p)
     crm = {c.id: c for c in crm_processos}
 

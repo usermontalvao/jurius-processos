@@ -118,14 +118,16 @@ def test_resumo_so_e_refeito_quando_a_assinatura_muda(tmp_path, monkeypatch):
     assert r["resumos_feitos"] == 1 and len(chamadas) == 1
     ficha_gravada = [e for e in sup.escritas if e[0] == "POST"][0][2][0]
     assert ficha_gravada["polo_ativo"] == "LUANA" and ficha_gravada["fase"] == "instrucao"
-    ass = [e for e in sup.escritas if e[0] == "PATCH"][0][2]["resumo_assinatura"]
+    ass = [e for e in sup.escritas if e[0] == "PATCH" and e[1] == "process_insights"][0][2]["resumo_assinatura"]
+    # Vara vazia no processo recebe o órgão (o cron 16 fazia isso).
+    assert any(e[1] == "processes" and e[2] == {"court": "VARA DE CUIABÁ"} for e in sup.escritas)
 
     # Mesmas entradas: ficha regravada, IA não é chamada de novo.
     sup2 = Sup([{"process_id": "p1", "resumo_assinatura": ass}])
     monkeypatch.setattr(alimentar, "_cliente", lambda cfg: httpx.Client(base_url="https://x", transport=httpx.MockTransport(sup2)))
     r = alimentar.ficha(b, cfg, procs, aplicar=True, hoje=HOJE, crm=CRMFalso())
     assert r["resumos_feitos"] == 0 and len(chamadas) == 1
-    assert not any(e[0] == "PATCH" for e in sup2.escritas)
+    assert not any(e[0] == "PATCH" and e[1] == "process_insights" for e in sup2.escritas)
 
 
 def test_ensaio_da_ficha_nao_escreve_nem_chama_ia(tmp_path, monkeypatch):
@@ -229,3 +231,39 @@ def test_resumo_sabe_o_que_ja_aconteceu():
     depois = ficha.entradas({"codigo": "x"}, {}, {"fase": "aguardando_sentenca"}, [], [], [],
         [{"quando": "2026-11-18T14:00:00+00:00", "titulo": "AUDIÊNCIA X", "status": "pendente"}], [], None, date(2026, 11, 19))
     assert depois["agenda"][0]["ja_ocorreu"] is True
+
+
+def _inst(classe, assuntos, grau="JE"):
+    return {"grau": grau, "classe": {"nome": classe}, "assuntos": [{"codigo": c, "nome": n} for c, n in assuntos]}
+
+
+def test_area_dos_casos_reais_classificados_como_civel():
+    # Auditoria 26/09/2026: 22 processos "cível" no CRM.
+    ac = ficha.area_provavel
+    assert ac("10231234520258110015", [_inst("Recurso Inominado Cível", [(7779, "Indenização por Dano Moral")])],
+              {"P": ["TAM LINHAS AÉREAS S.A."]}) == "consumidor"
+    assert ac("10258248120258110002", [_inst("Procedimento do Juizado Especial Cível", [(10433, "Indenização por Dano Moral")])],
+              {"P": ["BANCO AGIBANK S.A"]}) == "consumidor"
+    assert ac("10750627220258110001", [_inst("Procedimento do Juizado Especial Cível", [(10654, "Competência da Justiça Estadual")])],
+              {"P": ["HDI SEGUROS S.A."]}) == "consumidor"
+    assert ac("10612729520258110041", [_inst("Procedimento Comum Cível", [(6107, "Auxílio-Acidente (Art. 86)")])],
+              {"P": ["INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"]}) == "previdenciario"
+    assert ac("10108546120254013600", [_inst("Recurso Inominado Cível", [(11946, "Deficiente")])], {}) == "previdenciario"
+    # Continuam cível: réu pessoa física, ente público, acidente de trânsito.
+    assert ac("10373808020258110002", [_inst("Procedimento Comum Cível", [(10433, "Indenização por Dano Moral")])],
+              {"P": ["THUYANNA MALU DIAS RIBEIRO"]}) == "civel"
+    assert ac("10037505220248110007", [_inst("Procedimento do Juizado Especial da Fazenda Pública", [(10308, "Adicional de Serviço Noturno")])],
+              {"P": ["ESTADO DE MATO GROSSO"]}) == "civel"
+    assert ac("10149906720238110041", [_inst("Cumprimento de sentença", [(10435, "Acidente de Trânsito")])],
+              {"P": ["LENILSON FABRIZIO SEBALHO"]}) == "civel"
+    assert ac("00006912420265230006", [], {}) == "trabalhista"
+
+
+def test_area_concurso_e_juizado_so_no_djen():
+    ac = ficha.area_provavel
+    # Mandado de segurança de concurso não é previdenciário.
+    assert ac("10127674420238110041", [_inst("Mandado de Segurança Cível", [(10371, "Reserva de Vagas para Deficientes")])],
+              {"P": ["IBFC - INSTITUTO BRASILEIRO DE FORMACAO E CAPACITACAO"]}) == "civel"
+    # Sem DataJud: "Juizado Especial Cível" no órgão do DJEN + réu empresa.
+    assert ac("10351988720268110002", [], {"P": ["PICPAY INSTITUIÇÃO DE PAGAMENTO S.A."]},
+              ["1º JUIZADO ESPECIAL CÍVEL DE VÁRZEA GRANDE"]) == "consumidor"

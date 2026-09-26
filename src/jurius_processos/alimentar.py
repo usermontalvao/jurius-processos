@@ -102,6 +102,7 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
     ela a intimação de outro processo entraria órfã e ficaria órfã (o hash já
     estaria lá quando o ciclo viesse gravá-la direito)."""
     hoje = hoje or date.today()
+    inicio_execucao = _agora()
     corte = (hoje - timedelta(days=JANELA_INTIMACOES_DIAS)).isoformat()
     http = _cliente(cfg)
     ja = {r["hash"] for r in _tudo(http, "djen_comunicacoes", "hash",
@@ -132,6 +133,18 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
             vinculadas.add(proc.id)
 
     resumo = {"desde": corte, "novas": len(novas), "processos_tocados": len(vinculadas), "aplicado": aplicar}
+    if aplicar and somente is None:
+        # O card "Sincronização DJEN" da aba Processos lê djen_sync_history;
+        # com o cron 5 (run-djen-sync) desligado, quem registra é o servidor.
+        agora = _agora()
+        http.post("/djen_sync_history", headers={"Prefer": "return=minimal"}, json={
+            "synced_at": agora, "run_started_at": inicio_execucao, "run_finished_at": agora,
+            "items_found": len(novas), "items_saved": len(novas),
+            "date_range_start": corte, "date_range_end": hoje.isoformat(),
+            "source": "jurius-processos", "origin": "servidor", "trigger_type": "ciclo",
+            "status": "success", "success": True,
+            "message": f"{len(novas)} intimação(ões) nova(s) desde {corte}",
+        }).raise_for_status()
     if not aplicar or not novas:
         return resumo
     for i in range(0, len(novas), 100):
@@ -475,6 +488,10 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
         orgaos += [c["orgao"] for c in comunicacoes if c["orgao"]]
         textos = [c["texto"] for c in comunicacoes] + [i.get("texto") for i in (dados.get(proc.id) or {}).get("intimacoes") or []]
         f = ficha_mod.montar(analise, vinc, hoje, orgaos, textos)
+        partes_f = {"A": (f.get("polo_ativo") or "").split(", ") if f.get("polo_ativo") else [],
+                    "P": (f.get("polo_passivo") or "").split(", ") if f.get("polo_passivo") else []}
+        f["area"] = ficha_mod.area_provavel(proc.numero, instancias, partes_f,
+                                            [c["classe"] for c in comunicacoes] + orgaos)
         d = dados.get(proc.id, {})
         movs = [m for i in instancias for m in i.get("movimentos") or []]
         e = ficha_mod.entradas({"codigo": proc.codigo, "area": d.get("area"), "cliente": nomes.get(proc.client_id)},
@@ -498,6 +515,28 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
         http.post("/process_insights", params={"on_conflict": "process_id"},
                   headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
                   json=linhas[i:i + 100]).raise_for_status()
+    # Vara vazia no processo: o servidor preenche com o órgão (o datajud-sync,
+    # cron 16, fazia isso). Só VAZIA — a digitada pelo escritório vale. Duas
+    # chamadas em vez de "or": filtro "or" em UPDATE do PostgREST dá 42703.
+    varas = 0
+    for linha in linhas:
+        if linha.get("orgao") and not ((dados.get(linha["process_id"]) or {}).get("vara") or "").strip():
+            for filtro in ({"court": "is.null"}, {"court": "eq."}):
+                http.patch("/processes", params={"id": f"eq.{linha['process_id']}", **filtro},
+                           json={"court": linha["orgao"]}).raise_for_status()
+            varas += 1
+    resumo["varas_preenchidas"] = varas
+    # Área: só troca o "cível" (o chute antigo pelo número CNJ, e o padrão da
+    # tela) quando o servidor apurou outra. Área escolhida pelo escritório fica.
+    areas = 0
+    for linha in linhas:
+        atual = (dados.get(linha["process_id"]) or {}).get("area")
+        if linha.get("area") and linha["area"] != "civel" and atual in (None, "", "civel"):
+            for filtro in ({"practice_area": "eq.civel"}, {"practice_area": "is.null"}):
+                http.patch("/processes", params={"id": f"eq.{linha['process_id']}", **filtro},
+                           json={"practice_area": linha["area"]}).raise_for_status()
+            areas += 1
+    resumo["areas_corrigidas"] = areas
     if not cfg.deepseek_key:
         resumo["resumos_pulados"] = "sem DEEPSEEK_API_KEY"
         return resumo
