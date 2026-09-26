@@ -13,6 +13,9 @@ class BancoFalso:
     def processos(self, *_):
         return self.linhas
 
+    def comunicacoes(self, numero):
+        return []
+
 
 def _linha(numero, pid, status_crm):
     return {"numero": numero, "analise": json.dumps({"status_crm": status_crm}),
@@ -50,3 +53,11 @@ def test_troca_de_status_so_avisa_o_cliente_quando_o_fato_e_recente():
     assert status_e_novidade("2026-09-20", hoje)          # conciliação de ontem → aviso
     assert not status_e_novidade("2026-07-17", hoje)      # corrigir fato de julho → calado
     assert not status_e_novidade(None, hoje)              # sem data do fato → calado
+
+
+def test_partes_do_acervo_completadas_pelo_texto():
+    from jurius_processos.publicar import partes_para_tela
+    r = partes_para_tela({"A": ["HIAGO DE OLIVEIRA LIMA"], "P": []},
+                         ["ajuizada por HIAGO DE OLIVEIRA LIMA em face de NU PAGAMENTOS S/A, pleiteando"])
+    assert r == {"A": ["HIAGO DE OLIVEIRA LIMA"], "P": ["NU PAGAMENTOS S/A"]}
+    assert partes_para_tela({"A": ["X"], "P": ["INSS SENTENÇA TIPO A"]}, [])["P"] == ["INSS"]

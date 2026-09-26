@@ -25,6 +25,18 @@ from .banco import Banco
 from .config import cabecalhos_supabase
 
 
+def partes_para_tela(partes: dict, textos: list) -> dict:
+    """{A: [...], P: [...]} para exibir: polo vazio completado pelo texto."""
+    from .ficha import limpar_partes, partes_do_texto
+    out = {k: list(v or []) for k, v in (partes or {}).items()}
+    if not (out.get("A") and out.get("P")):
+        lidas = partes_do_texto(textos)
+        for polo in ("A", "P"):
+            if not out.get(polo):
+                out[polo] = lidas[polo]
+    return {polo: limpar_partes(nomes) for polo, nomes in out.items()}
+
+
 def _linha_acervo(p: dict) -> dict:
     a, v = p["a"], p["v"]
     return {
@@ -47,7 +59,10 @@ def _linha_acervo(p: dict) -> dict:
         "audiencia": a.get("audiencia"),
         "pendencias": a.get("pendencias") or [],
         "marcos": a.get("marcos") or [],
-        "partes": v.get("partes") or {},
+        # O que a tela mostra (autor × réu): destinatários do DJEN completados
+        # pelo texto das intimações e limpos. O vínculo com cliente continua
+        # usando só v["partes"] (destinatários), que é o dado mais seguro.
+        "partes": p.get("partes_tela") or v.get("partes") or {},
         "parte_principal": v.get("parte_principal"),
         "vinculo_tipo": v.get("tipo"),
         "client_id": v.get("client_id"),
@@ -68,6 +83,7 @@ def planejar(banco: Banco, crm_processos, somente: list[str] | None = None,
             continue
         p = dict(r)
         p["a"], p["v"] = json.loads(p["analise"]), json.loads(p["vinculo"])
+        p["partes_tela"] = partes_para_tela(p["v"].get("partes") or {}, [c["texto"] for c in banco.comunicacoes(p["numero"])])
         procs.append(p)
     crm = {c.id: c for c in crm_processos}
 
