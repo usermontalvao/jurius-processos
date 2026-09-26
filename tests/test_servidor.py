@@ -91,7 +91,7 @@ def test_atualizar_grava_so_aquele_processo_com_a_lista_inteira_do_crm(api, monk
     procs = [SimpleNamespace(id="p1", numero=n), SimpleNamespace(id="p2", numero="2" * 20)]
     monkeypatch.setattr(m, "ClienteDJEN", lambda: SimpleNamespace(do_processo=lambda *a: []))
     monkeypatch.setattr(m, "ClienteDataJud", lambda k: SimpleNamespace(lote=lambda ns: []))
-    monkeypatch.setattr(m.etapas, "carregar_crm", lambda cfg: (SimpleNamespace(financeiro=dict, agenda=lambda ps: {}), None, [], procs))
+    monkeypatch.setattr(m.etapas, "carregar_crm", lambda cfg: (SimpleNamespace(financeiro=dict, agenda=lambda ps: {}, prazos=lambda ps: {}), None, [], procs))
     monkeypatch.setattr(m.etapas, "analisar", lambda *a, **k: None)
     monkeypatch.setattr(m.publicar, "publicar", lambda *a, **k: None)
     visto = {}

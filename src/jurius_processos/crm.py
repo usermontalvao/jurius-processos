@@ -150,6 +150,24 @@ class CRM:
                                                 "status": e.get("status"), "criado_em": e.get("created_at")})
         return out
 
+    def prazos(self, procs: list[ProcessoCRM]) -> dict[str, list[dict]]:
+        """Prazos por processo, para o estágio (réplica cumprida → aguardando
+        sentença). Prazo só com o cliente vale para o único processo ativo dele."""
+        ativos: dict[str, list[str]] = {}
+        for p in procs:
+            if p.client_id and (p.status or "") != "arquivado":
+                ativos.setdefault(p.client_id, []).append(p.id)
+        out: dict[str, list[dict]] = {}
+        for d in self._tudo("deadlines", "process_id,client_id,title,due_date,status",
+                            {"deleted_at": "is.null", "status": "neq.cancelado"}):
+            pid = d.get("process_id")
+            if not pid:
+                ids = ativos.get(d.get("client_id") or "", [])
+                pid = ids[0] if len(ids) == 1 else None
+            if pid:
+                out.setdefault(pid, []).append(d)
+        return out
+
     def para_a_ficha(self) -> dict[str, dict]:
         """O que a ficha/resumo precisa do CRM, por processo, numa varredura só:
         {process_id: {area, notas, intimacoes, prazos}}. Uma consulta por tabela

@@ -366,3 +366,37 @@ def test_tipo_da_audiencia_do_datajud_normalizado():
     a = analisar("n", datajud, [], HOJE, agenda=[{"quando": "2026-10-13T14:00:00Z", "titulo": "Audiência Online — HIAGO",
                                                   "status": "pendente"}])
     assert a["audiencia"]["tipo"] == "conciliação"
+
+
+def test_caso_juliana_replica_cumprida_depois_da_conciliacao_aguarda_sentenca():
+    # 1049137-40: conciliação 18/09 (agenda), IMPUGNAÇÃO cumprida com vencimento 24/09.
+    datajud = [inst("JE", [mov(26, "2026-08-01"),
+                           mov(12740, "2026-08-14", "de Conciliação", situacao_da_audiencia=("designada", 1))])]
+    agenda = [{"quando": "2026-09-18T14:00:00Z", "titulo": "Audiência Online — JULIANA", "status": "pendente"}]
+    prazos = [{"title": "IMPUGNAÇÃO", "due_date": "2026-09-24T00:00:00+00:00", "status": "cumprido"}]
+    a = analisar("n", datajud, [], HOJE, agenda=agenda, prazos=prazos)
+    assert a["status_crm"] == "aguardando_sentenca" and a["status_desde"] == "2026-09-24"
+    # Sem a réplica, continua na fase da defesa (Lisliandra: conciliação 24/09, nada depois).
+    assert analisar("n", datajud, [], HOJE, agenda=agenda)["status_crm"] == "contestacao"
+
+
+def test_concluso_para_julgamento_aguarda_sentenca_e_despacho_depois_desfaz():
+    conc = mov(51, "2026-09-10", "Conclusão", tipo_de_conclusao=("para julgamento", 1))
+    datajud = [inst("JE", [mov(26, "2026-05-01"), conc])]
+    assert analisar("n", datajud, [], HOJE)["status_crm"] == "aguardando_sentenca"
+    # Audiência futura: não está aguardando sentença.
+    agenda = [{"quando": "2026-11-10T12:00:00Z", "titulo": "Audiência de Instrução", "status": "pendente"}]
+    assert analisar("n", datajud, [], HOJE, agenda=agenda)["status_crm"] != "aguardando_sentenca"
+
+
+def test_instrucao_realizada_sem_nova_audiencia_aguarda_sentenca():
+    datajud = [inst("JE", [mov(26, "2026-05-01")])]
+    agenda = [{"quando": "2026-06-10T12:00:00Z", "titulo": "AUDIÊNCIA INICIAL - X", "status": "pendente"},
+              {"quando": "2026-09-10T12:00:00Z", "titulo": "AUDIÊNCIA DE INSTRUÇÃO - X", "status": "pendente"}]
+    assert analisar("n", datajud, [], HOJE, agenda=agenda)["status_crm"] == "aguardando_sentenca"
+
+
+def test_calculos_de_liquidacao_no_djen_e_cumprimento():
+    datajud = [inst("G1", [mov(26, "2026-03-01")])]
+    coms = [{"data": "2026-09-24", "texto": "Considerando o trânsito, determino a elaboração de cálculos de liquidação por perito contábil"}]
+    assert analisar("n", datajud, coms, HOJE)["status_crm"] == "cumprimento"

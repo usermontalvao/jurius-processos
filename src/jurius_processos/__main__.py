@@ -57,7 +57,7 @@ def main():
         res = etapas.enriquecer(banco, cfg, somente_pendentes=not a.todos, limite=a.limite)
     elif a.cmd == "analisar":
         crm, _, clientes, procs = etapas.carregar_crm(cfg)
-        res = etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro(), agenda=crm.agenda(procs))
+        res = etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro(), agenda=crm.agenda(procs), prazos=crm.prazos(procs))
     elif a.cmd == "relatorio":
         _, _, clientes, procs = etapas.carregar_crm(cfg)
         res = {"arquivo": relatorio.gerar(banco, clientes, procs, a.saida)}

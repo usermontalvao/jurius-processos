@@ -62,7 +62,10 @@ _EXTINTA_EXECUCAO = re.compile(
 # Início do cumprimento de sentença lido no DJEN: a intimação do art. 523 chega
 # semanas antes da evolução de classe no DataJud.
 _INICIO_CUMPRIMENTO = re.compile(
-    r"pagamento\s+volunt[áa]rio|\bart(igo|\.)?\s*523\b|impugna[çc][ãa]o\s+ao\s+cumprimento\s+de\s+senten")
+    r"pagamento\s+volunt[áa]rio|\bart(igo|\.)?\s*523\b|impugna[çc][ãa]o\s+ao\s+cumprimento\s+de\s+senten"
+    # Liquidação é o começo do cumprimento (Gabriel 0000284-09: "elaboração de
+    # cálculos de liquidação" com o DataJud parado em junho).
+    r"|c[áa]lculos\s+de\s+liquida|liquida[çc][ãa]o\s+de\s+senten|fase\s+de\s+liquida")
 _CIENCIA_SENTENCA = re.compile(r"ci[êe]ncia\s+d[ao]\s+senten[çc]a")
 _ALVARA_TEXTO = re.compile(r"expedi[çc][ãa]o\s+d[oe]\s+alvar[áa]|alvar[áa]\s+eletr[ôo]nico|requisi[çc][ãa]o\s+de\s+pequeno\s+valor"
                            r"|expe[çc]o\s+(o\s+)?(competente\s+)?alvar[áa]|alvar[áa]\s+finalizado")
@@ -133,6 +136,7 @@ PARA_STATUS_CRM = {
     "sentenciado": "sentenca",
     "recursal": "recurso",
     "transitado": "sentenca",
+    # "aguardando_sentenca" não vem de fase: é refinamento de conhecimento/instrução (ver analisar).
     "cumprimento_sentenca": "cumprimento",
     "execucao": "cumprimento",
     "desconhecida": None,
@@ -206,7 +210,7 @@ def _agenda_audiencias(agenda: list[dict] | None) -> list[tuple[datetime, str, d
 
 
 def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje: date,
-             agenda: list[dict] | None = None) -> dict:
+             agenda: list[dict] | None = None, prazos: list[dict] | None = None) -> dict:
     """agenda: audiências da agenda do CRM ({quando, titulo, status}). Depois da
     audiência inicial, o DataJud e o DJEN do TRT costumam calar por meses — a
     instrução marcada na audiência só existe na agenda do escritório."""
@@ -228,6 +232,7 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
     ultimo_ato_vivo = None
     ultima_suspensao = ultimo_fim_suspensao = None
     transito = cumprimento_inicio = extincao_execucao = ultimo_substantivo = None
+    conclusao_julgamento = None
     julgamentos_favoraveis: list[datetime] = []
     alvaras: list[datetime] = []
     audiencias: list[dict] = []
@@ -309,6 +314,10 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         elif c in DECISOES_INICIAIS and not recursal:
             chegou("conhecimento", q)
 
+        # "Conclusão [para julgamento]" no 1º grau: autos com o juiz para sentença.
+        if c == 51 and not recursal and any("julgamento" in _norm(x.get("nome")) or "sentenca" in _norm(x.get("nome"))
+                                            for x in (m["bruto"].get("complementosTabelados") or [])):
+            conclusao_julgamento = q
         if c in ALVARA or "requisicao de pequeno valor" in nome_n or "precatorio" in nome_n:
             alvaras.append(q)
         if c not in ROTINA:
@@ -367,6 +376,8 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
     audiencias_datadas_passadas = [datetime.fromisoformat(djen_audiencia["data"])] \
         if djen_audiencia and djen_audiencia["data"] and djen_audiencia["data"] < hoje.isoformat() else []
     agenda_futura = None
+    instrucoes_passadas = [a["quando"] for a in audiencias
+                           if "instru" in _norm(a["tipo"]) and _norm(a["situacao"]) == "realizada"]
     for q, titulo, lancada in _agenda_audiencias(agenda):
         tipo = _tipo_audiencia(titulo)
         # Dia seguinte em diante: no mesmo dia é a própria conciliação lançada
@@ -377,6 +388,8 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             audiencias_datadas_passadas.append(q)
             if tipo == "conciliação":
                 conciliacoes_passadas.append(q)
+            elif tipo == "instrução":
+                instrucoes_passadas.append(q)
         if tipo == "instrução":
             chegou("instrucao", min(q, hoje_dt))
         elif tipo == "conciliação":
@@ -527,11 +540,34 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         # desenhado em cima de Instrução na barra de estágios da Linha do Tempo.
         status_crm = "contestacao"
 
+    # Aguardando sentença (pedido do usuário, 26/09/2026 — caso Juliana
+    # 1049137-40: conciliação 18/09, réplica cumprida 24/09). Sem audiência
+    # futura e: concluso para julgamento sem ato do juiz depois; ou réplica/
+    # impugnação cumprida depois da conciliação; ou instrução já realizada.
+    aguardando_desde = None
+    if status_crm in ("distribuido", "andamento", "contestacao", "instrucao") and situacao == "ativo" and not audiencia:
+        sinais = []
+        if conclusao_julgamento and (not ultimo_ato_vivo or conclusao_julgamento >= ultimo_ato_vivo):
+            sinais.append(conclusao_julgamento)
+        if conciliacoes_passadas:
+            depois = max(conciliacoes_passadas)
+            for p in prazos or []:
+                venc = _data(p.get("due_date"))
+                if venc and venc >= depois and p.get("status") == "cumprido" \
+                        and re.search(r"impugn|replica", _norm(p.get("title"))):
+                    sinais.append(venc)
+        if instrucoes_passadas:
+            sinais.append(max(instrucoes_passadas))
+        if sinais:
+            status_crm, aguardando_desde = "aguardando_sentenca", max(sinais)
+
     # Quando aconteceu o fato que dá o status_crm. O CRM avisa o cliente no
     # portal a cada troca de status; a troca que só CORRIGE o estágio (fato
     # antigo) vai calada — ver publicar.py.
     if situacao == "arquivado":
         status_desde = arquivado_em
+    elif status_crm == "aguardando_sentenca":
+        status_desde = aguardando_desde
     elif status_crm == "contestacao":
         status_desde = max(conciliacoes_passadas)
     elif status_crm in ("conciliacao", "instrucao") and audiencia and audiencia.get("designada_em"):

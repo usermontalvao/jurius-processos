@@ -120,7 +120,7 @@ def enriquecer(banco: Banco, cfg: Config, somente_pendentes: bool = True, idade_
 # ── 3. ANÁLISE: fase + vínculo ─────────────────────────────────────────────
 def analisar(banco: Banco, clientes, crm_processos, hoje: date | None = None,
              somente: list[str] | None = None, financeiro: dict[str, list[dict]] | None = None,
-             agenda: dict[str, list[dict]] | None = None) -> dict:
+             agenda: dict[str, list[dict]] | None = None, prazos: dict[str, list[dict]] | None = None) -> dict:
     hoje = hoje or date.today()
     indice = vinculo.IndiceClientes(clientes)
     por_numero = {p.numero: p for p in crm_processos if p.numero}
@@ -135,7 +135,8 @@ def analisar(banco: Banco, clientes, crm_processos, hoje: date | None = None,
         instancias = json.loads(linha["datajud"]) if linha["datajud"] else []
         proc_crm = por_numero.get(numero)
         a = fases.analisar(numero, instancias, comunicacoes, hoje,
-                           agenda=(agenda or {}).get(proc_crm.id) if proc_crm else None)
+                           agenda=(agenda or {}).get(proc_crm.id) if proc_crm else None,
+                           prazos=(prazos or {}).get(proc_crm.id) if proc_crm else None)
         v = vinculo.vincular(numero, comunicacoes, indice, por_numero.get(numero))
         if financeiro is not None:
             # Alvará × Financeiro só para processo do CRM: o de fora não tem lançamento.
