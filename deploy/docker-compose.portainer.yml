@@ -1,4 +1,4 @@
-# GERADO por deploy/gerar-stack.py (commit 2cb3181). Não edite à mão.
+# GERADO por deploy/gerar-stack.py (commit c8fe4b8). Não edite à mão.
 #
 # Portainer → Stacks → Add stack → colar este arquivo. Em "Environment variables":
 #   SUPABASE_URL                 https://<projeto>.supabase.co
@@ -29,14 +29,14 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       DEEPSEEK_MODELO: "deepseek-flash"
       JURIUS_CADASTRAR_AUTO: "0"
-      JURIUS_VERSAO: "2cb3181"
+      JURIUS_VERSAO: "c8fe4b8"
       JURIUS_BANCO: /dados/cerebro.sqlite3
       DJEN_INICIO: "2023-01-01"
       TZ: America/Cuiaba
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: /app/src
       FONTES_B64: |
-        H4sIABAcuGoC/+y9a28bWZYgWJ/5K25HbsLBTCpMUi+bWcxqpaysktu2XJKc3V0qgb4ig1LYJIMZ
+        H4sIABccuGoC/+y9a28bWZYgWJ/5K25HbsLBTCpMUi+bWcxqpaysktu2XJKc3V0qgb4ig1LYJIMZ
         EZQfGjV6sYtZzC4GC0zPYoH+sp3TwNZmAfWpeoFFfWz9k/oDuz9hz+M+I4KSnJnlqZ60K8sOxuM+
         zj333PM+0d3o7l8+la9/EctRnP3kT/KnzX+W/dtur3btNd7vtLud9k/E65+8hz+LvJAZdP+TH+ef
         7oaYFsk07nc277e79+7fv9+O1lfv3+82fvLhz4/gT54N775YZMkiH8yzdBjneZrfHQySWVIMBtH8
