@@ -1,6 +1,8 @@
-.venv/
-dados/
-.env
-__pycache__/
 *.pyc
+.env
 .pytest_cache/
+.venv/
+__pycache__/
+dados/
+deploy/docker-compose.portainer.yml
+deploy/token.secret

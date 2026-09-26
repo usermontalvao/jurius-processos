@@ -58,13 +58,27 @@ PYTHONPATH=src .venv/bin/pytest -q
 
 `run.sh` lê as chaves do `.env` do CRM (`../CRMlaw/.env`) sem copiá-las para cá.
 
-## Servidor
+## Servidor (Portainer + Cloudflare Tunnel)
 
-1. `sql/001_acervo.sql` aplicado no Supabase do CRM.
-2. Em `/opt/jurius-processos`: `docker-compose.yml` + `.env` (ver `.env.example`).
-3. Cloudflare Zero Trust → Tunnels → criar túnel, apontar o hostname público para
-   `http://cerebro:8080`, e colocar o token em `CLOUDFLARE_TUNNEL_TOKEN`.
-4. Secrets do GitHub: `SERVIDOR_HOST`, `SERVIDOR_USUARIO`, `SERVIDOR_CHAVE_SSH`.
-5. Um push na `main` roda os testes, publica a imagem e reinicia no servidor.
+O servidor do escritório não tem este repositório e a bridge do Docker dele
+está quebrada. Por isso a stack leva o código dentro dela e usa rede de host
+presa a 127.0.0.1 (o mesmo desenho do Jurius Call).
 
-Comece com `JURIUS_PUBLICAR=0` (ensaio) e ligue depois de conferir o relatório.
+1. `.venv/bin/python deploy/gerar-stack.py` → `deploy/docker-compose.portainer.yml`
+   (gerado, fora do git; nunca editar à mão).
+2. Portainer → Stacks → Add stack → colar o arquivo. Variáveis da stack:
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` e `JURIUS_TOKEN_API`
+   (o valor está em `deploy/token.secret`, fora do git).
+3. Cloudflare Zero Trust → Tunnels → túnel do servidor → Public hostname:
+   `processos.jurius-api.com` → `http://localhost:8792`.
+4. Abrir `https://processos.jurius-api.com/`. Com o volume vazio, a primeira
+   carga (histórico desde 2023) leva ~30 min e NADA é publicado antes dela.
+5. Depois que o painel mostrar a carga concluída, parar a cópia local
+   (`pkill -f "uvicorn jurius_processos.api:app"`): dois cérebros publicando
+   ao mesmo tempo é exatamente o que este serviço veio acabar.
+
+O DJEN recusa IP fora do Brasil (403). Se o servidor não tiver saída brasileira,
+o painel mostra "O DJEN recusou o acesso" em vez de fingir que não há intimação.
+
+Atualizar o serviço = gerar a stack de novo e "Update the stack" no Portainer
+(o volume `jurius_processos_dados` guarda o banco entre as versões).

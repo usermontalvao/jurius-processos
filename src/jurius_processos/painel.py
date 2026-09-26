@@ -42,6 +42,9 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "datajud": dict(con.execute("select coalesce(datajud_status,'nunca'), count(*) from processos group by 1").fetchall()),
         "execucoes": execs,
         "ocupado": ocupado,
+        "carga_feita": banco.carga_feita(),
+        "ultimo_erro": next((e["resumo"].get("erro") for e in execs
+                             if not e["ok"] and e["fim"] and isinstance(e["resumo"], dict) and e["resumo"].get("erro")), None),
     }
 
 
@@ -71,6 +74,7 @@ code{font-size:11px;color:var(--mut);word-break:break-word}
 <header><div><h1>Jurius Processos</h1>
 <div class="sub">Descobre pelo DJEN (OAB e nome completo), enriquece no DataJud, analisa e publica no CRM. Ciclo automático a cada 2 h, das 06h às 22h (Cuiabá).</div></div>
 <div class="sp"></div><span id="estado" class="sub"></span><button id="rodar">Rodar ciclo agora</button></header>
+<div id="aviso"></div>
 <div class="grid" id="nums"></div>
 <div class="cols" id="dist"></div>
 <div class="card"><h2>Últimas execuções</h2><table><thead><tr><th>Etapa</th><th>Início</th><th>Duração</th><th></th><th>Resumo</th></tr></thead><tbody id="execs"></tbody></table></div>
@@ -88,6 +92,10 @@ async function carregar(){
     .map(([l,n])=>'<div class="card"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>').join('');
   document.getElementById('dist').innerHTML=bloco('Fase',d.fases,FASE)+bloco('Vínculo com o CRM',d.vinculos,VINC)+bloco('Situação',d.situacoes);
   document.getElementById('execs').innerHTML=d.execucoes.map(e=>'<tr><td>'+esc(e.etapa)+'</td><td>'+hora(e.inicio)+'</td><td>'+dur(e.inicio,e.fim)+'</td><td class="'+(e.ok?'ok':'err')+'">'+(e.fim?(e.ok?'ok':'falhou'):'…')+'</td><td><code>'+esc(JSON.stringify(e.resumo))+'</code></td></tr>').join('');
+  const av=[];
+  if(!d.carga_feita) av.push('Primeira carga em andamento: o histórico desde 2023 é buscado antes de publicar qualquer coisa no CRM (≈30 min).');
+  if(d.ultimo_erro) av.push('Última falha: '+esc(d.ultimo_erro));
+  document.getElementById('aviso').innerHTML=av.map(t=>'<div class="card" style="margin-bottom:12px;border-color:var(--acc)">'+t+'</div>').join('');
   document.getElementById('estado').textContent=d.ocupado?'Trabalhando agora…':'Parado · atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;
 }

@@ -137,6 +137,16 @@ class Banco:
             (agora(), numero, tipo, json.dumps(detalhe or {}, ensure_ascii=False)),
         )
 
+    def carga_feita(self) -> bool:
+        """A carga completa (histórico desde DJEN_INICIO) já rodou com sucesso?
+
+        Banco vindo da máquina de desenvolvimento conta: lá a carga foi feita
+        etapa por etapa (`descobrir --desde 2023-01-01`).
+        """
+        return bool(self.con.execute(
+            "select 1 from execucoes where ok=1 and (etapa='carga_completa' "
+            "or (etapa='descobrir' and json_extract(resumo,'$.inicio') like '2023-%')) limit 1").fetchone())
+
     def abrir_execucao(self, etapa: str) -> int:
         return self.con.execute("insert into execucoes (etapa, inicio) values (?,?)", (etapa, agora())).lastrowid
 

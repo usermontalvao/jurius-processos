@@ -29,6 +29,11 @@ from .config import carregar
 from .datajud import ClienteDataJud
 from .djen import ClienteDJEN
 
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 cfg = carregar()
 banco = Banco(cfg.banco)
 _trava = threading.Lock()  # uma etapa pesada por vez
@@ -71,10 +76,17 @@ def painel_json():
 
 @app.post("/ciclo", include_in_schema=False)
 def rodar_ciclo(request: Request):
-    """Botão "Rodar ciclo agora" do painel. Só aceita pedido da própria máquina:
-    atrás do túnel, o ciclo roda pelo agendador ou com o token."""
-    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
-        raise HTTPException(403, "só pela própria máquina")
+    """Botão "Rodar ciclo agora" do painel.
+
+    Atrás do Cloudflare Tunnel TODO pedido chega de 127.0.0.1 (o cloudflared
+    roda na mesma máquina), então "é local?" não basta: pedido que traz o
+    cabeçalho CF-Connecting-IP veio da internet e precisa do token.
+    """
+    local = (request.client is not None and request.client.host in ("127.0.0.1", "::1")
+             and "cf-connecting-ip" not in request.headers)
+    token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not local and not (cfg.token_api and token == cfg.token_api):
+        raise HTTPException(403, "fora da máquina do serviço, rodar o ciclo exige o token")
     if _trava.locked():
         raise HTTPException(409, "já há um ciclo rodando")
 

@@ -28,6 +28,14 @@ log = logging.getLogger(__name__)
 BASE = "https://comunicaapi.pje.jus.br/api/v1/comunicacao"
 
 
+class ErroGeobloqueio(RuntimeError):
+    """O DJEN responde 403 para IP fora do Brasil. Retentar não adianta.
+
+    Levantado em vez de devolver lista vazia: "0 intimações" num servidor sem
+    saída brasileira pareceria que está tudo em dia.
+    """
+
+
 @dataclass(frozen=True)
 class Advogado:
     nome: str
@@ -103,6 +111,9 @@ class ClienteDJEN:
                 time.sleep(espera)
                 espera *= 2
                 continue
+            if r.status_code == 403:
+                raise ErroGeobloqueio(
+                    "O DJEN recusou o acesso (403). O servidor precisa sair para a internet por um IP do Brasil.")
             r.raise_for_status()
             restante = r.headers.get("X-RateLimit-Remaining")
             if restante is not None and int(restante) <= 2:

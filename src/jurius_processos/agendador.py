@@ -26,7 +26,28 @@ INTERVALO_H = 2
 JANELA = range(6, 23)
 
 
+def carga_completa(cfg: Config, banco: Banco) -> dict:
+    """Servidor novo, banco vazio: todo o histórico antes do primeiro publicar.
+
+    Publicar com o acervo pela metade mudaria status no CRM a partir de meia
+    informação. Leva ~30 min (o DataJud responde em 18–53 s por lote).
+    """
+    crm, advs, clientes, procs = etapas.carregar_crm(cfg)
+    exec_id = banco.abrir_execucao("carga_completa")
+    res = {
+        "descobrir": etapas.descobrir(banco, advs, cfg.djen_inicio),
+        "por_processo": etapas.descobrir_por_processo(banco, [p.numero for p in procs if p.numero], cfg.djen_inicio),
+        "do_crm": etapas.incluir_do_crm(banco, procs),
+        "enriquecer": etapas.enriquecer(banco, cfg, somente_pendentes=False),
+    }
+    banco.fechar_execucao(exec_id, True, {k: v for k, v in res.items() if k != "enriquecer"})
+    return res
+
+
 def ciclo(cfg: Config, banco: Banco) -> dict:
+    if not banco.carga_feita():
+        log.info("banco sem carga completa: rodando o histórico desde %s antes do 1º ciclo", cfg.djen_inicio)
+        carga_completa(cfg, banco)
     crm, advs, clientes, procs = etapas.carregar_crm(cfg)
     res = {
         "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
