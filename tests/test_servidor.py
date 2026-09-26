@@ -81,3 +81,31 @@ def test_crm_pode_chamar_o_servico_pelo_navegador(api):
     r = cli.options("/processos/1/atualizar", headers={
         "Origin": "https://site-qualquer.com", "Access-Control-Request-Method": "POST"})
     assert r.headers.get("access-control-allow-origin") is None
+
+
+def test_atualizar_grava_so_aquele_processo_com_a_lista_inteira_do_crm(api, monkeypatch):
+    import jurius_processos.api as m
+    from types import SimpleNamespace
+    cli, _ = api
+    n = "10141411620268110001"  # CNJ com dígito verificador válido
+    procs = [SimpleNamespace(id="p1", numero=n), SimpleNamespace(id="p2", numero="2" * 20)]
+    monkeypatch.setattr(m, "ClienteDJEN", lambda: SimpleNamespace(do_processo=lambda *a: []))
+    monkeypatch.setattr(m, "ClienteDataJud", lambda k: SimpleNamespace(lote=lambda ns: []))
+    monkeypatch.setattr(m.etapas, "carregar_crm", lambda cfg: (SimpleNamespace(financeiro=dict), None, [], procs))
+    monkeypatch.setattr(m.etapas, "analisar", lambda *a, **k: None)
+    monkeypatch.setattr(m.publicar, "publicar", lambda *a, **k: None)
+    visto = {}
+    monkeypatch.setattr(m.agendador, "alimentar_crm",
+                        lambda cfg, banco, ps, aplicar, somente=None: visto.update(ps=ps, somente=somente) or {"ok": 1})
+    r = cli.post(f"/processos/{n}/atualizar", headers={"Authorization": "Bearer segredo"})
+    assert r.status_code == 200 and r.json()["alimentar"] == {"ok": 1}
+    assert visto["ps"] == procs and visto["somente"] == [n]  # vínculo vem da lista inteira
+
+
+def test_atualizar_durante_o_ciclo_responde_ocupado_em_vez_de_travar(api, monkeypatch):
+    import jurius_processos.api as m
+    cli, _ = api
+    from types import SimpleNamespace
+    monkeypatch.setattr(m, "_trava", SimpleNamespace(acquire=lambda timeout=-1: False, locked=lambda: True))
+    r = cli.post("/processos/10141411620268110001/atualizar", headers={"Authorization": "Bearer segredo"})
+    assert r.status_code == 409

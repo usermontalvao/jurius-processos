@@ -16,9 +16,13 @@ rotina antiga é só reativar o cron.
 Dois cuidados que o histórico exige:
   - Intimação: só entra a da janela recente. As antigas que o Supabase nunca
     teve ficam no acervo; despejar 2 mil de uma vez não traria nada de novo.
-  - Movimento do DataJud: só entra o MAIS NOVO que o último já gravado daquele
-    processo. O gatilho do banco avisa o cliente no portal a cada movimento
-    inserido; inserir o histórico mandaria "sentença proferida" de 2024 hoje.
+  - Movimento do DataJud: o gatilho do banco avisa o cliente no portal a cada
+    movimento inserido. Só vai COM aviso o que é mais novo que o último já
+    gravado daquele processo; a lacuna (movimento antigo que faltava) e a
+    primeira carga de um processo entram SEM aviso, pelo cabeçalho
+    X-Jurius-Sem-Aviso que o gatilho respeita (migration
+    20260926_portal_aviso_sem_historico). Assim o banco nunca fica com buraco
+    e o cliente nunca recebe "sentença proferida" de 2024 hoje.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ from .prazo import contar_prazo_da_intimacao
 log = logging.getLogger(__name__)
 
 JANELA_INTIMACOES_DIAS = 15
-JANELA_MOVIMENTO_SEM_HISTORICO_DIAS = 30
+SEM_AVISO = {"X-Jurius-Sem-Aviso": "1"}  # lido por _portal_notify_on_datajud_movimento
 IA_POR_CICLO = 40  # a rotina antiga fazia 10 a cada 30 min = 40 a cada 2 h
 
 
@@ -90,7 +94,12 @@ def linha_intimacao(item: dict, numero: str, process_id: str | None, client_id: 
     }
 
 
-def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: date | None = None) -> dict:
+def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: date | None = None,
+               somente: set[str] | None = None) -> dict:
+    """somente: números (sem máscara) a considerar — o "Atualizar" de UM processo.
+    A lista de processos do CRM continua inteira: é ela que dá o vínculo, e sem
+    ela a intimação de outro processo entraria órfã e ficaria órfã (o hash já
+    estaria lá quando o ciclo viesse gravá-la direito)."""
     hoje = hoje or date.today()
     corte = (hoje - timedelta(days=JANELA_INTIMACOES_DIAS)).isoformat()
     http = _cliente(cfg)
@@ -105,6 +114,8 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
         if not item.get("hash") or item["hash"] in ja:
             continue
         numero = r["numero"]
+        if somente is not None and numero not in somente:
+            continue
         proc = por_numero.get(numero)
         client_id = proc.client_id if proc else None
         if not client_id:
@@ -221,39 +232,68 @@ def cache_da_linha_do_tempo(instancias: list[dict]) -> dict:
 
 
 def _ts(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    """Data do DataJud ou do banco. Sem fuso (o DataJud às vezes manda assim)
+    vale como UTC — é como o Postgres a grava, e comparar com ingênua quebraria."""
+    t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
-def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, agora: datetime | None = None) -> dict:
-    agora = agora or datetime.now(timezone.utc)
+def separar_movimentos(proc, instancias: list[dict], existentes: set, ultimo: datetime | None) -> tuple[list, list]:
+    """(com_aviso, sem_aviso) do que ainda falta no CRM para este processo.
+
+    Com aviso só o que é mais novo que o último movimento já gravado. O resto
+    que falta — lacuna deixada pela rotina, ou o processo inteiro na primeira
+    carga (ultimo=None) — entra calado: é histórico, não novidade."""
+    com, sem = [], []
+    for m in linhas_movimento(proc, instancias):
+        t = _ts(m["data_hora"])
+        if (proc.codigo, m["codigo"], t) in existentes:
+            continue
+        existentes.add((proc.codigo, m["codigo"], t))  # a mesma linha em duas instâncias
+        (com if ultimo is not None and t > ultimo else sem).append(m)
+    return com, sem
+
+
+def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[str] | None = None) -> dict:
     http = _cliente(cfg)
     ultimo: dict[str, datetime] = {}
-    for r in _tudo(http, "datajud_movimentos", "process_code,data_hora"):
-        if r.get("process_code") and r.get("data_hora"):
-            t = _ts(r["data_hora"])
-            if r["process_code"] not in ultimo or t > ultimo[r["process_code"]]:
-                ultimo[r["process_code"]] = t
-    sem_historico = agora - timedelta(days=JANELA_MOVIMENTO_SEM_HISTORICO_DIAS)
+    existentes: set = set()
+    codigos = None if somente is None else {p.codigo for p in crm_processos if p.numero in somente}
+    for r in _tudo(http, "datajud_movimentos", "process_code,codigo,data_hora"):
+        if not r.get("process_code") or not r.get("data_hora"):
+            continue
+        if codigos is not None and r["process_code"] not in codigos:
+            continue
+        t = _ts(r["data_hora"])
+        existentes.add((r["process_code"], r.get("codigo"), t))
+        if r["process_code"] not in ultimo or t > ultimo[r["process_code"]]:
+            ultimo[r["process_code"]] = t
 
-    novos, caches = [], []
+    novos, lacunas, caches = [], [], []
     for proc in crm_processos:
-        if not proc.numero or not proc.codigo:
+        if not proc.numero or not proc.codigo or (somente is not None and proc.numero not in somente):
             continue
         r = banco.processo(proc.numero)
         if not r or r["datajud_status"] != "ok" or not r["datajud"]:
             continue
         inst = json.loads(r["datajud"])
-        corte = ultimo.get(proc.codigo, sem_historico)
-        novos += [m for m in linhas_movimento(proc, inst) if _ts(m["data_hora"]) > corte]
+        com, sem = separar_movimentos(proc, inst, existentes, ultimo.get(proc.codigo))
+        novos += com
+        lacunas += sem
         caches.append((proc.id, cache_da_linha_do_tempo(inst)))
 
-    resumo = {"movimentos_novos": len(novos), "caches": len(caches), "aplicado": aplicar}
+    resumo = {"movimentos_novos": len(novos), "lacunas_sem_aviso": len(lacunas), "caches": len(caches),
+              "aplicado": aplicar}
     if not aplicar:
         return resumo
-    for i in range(0, len(novos), 200):
-        http.post("/datajud_movimentos", params={"on_conflict": "process_code,codigo,data_hora"},
-                  headers={"Prefer": "resolution=ignore-duplicates,return=minimal"},
-                  json=novos[i:i + 200]).raise_for_status()
+    # Primeiro o histórico, calado; depois o novo, com aviso. Na ordem inversa
+    # o gatilho de status veria o novo antes do antigo — dá no mesmo, mas assim
+    # o banco fica na ordem em que as coisas aconteceram.
+    for linhas, extra in ((lacunas, SEM_AVISO), (novos, {})):
+        for i in range(0, len(linhas), 200):
+            http.post("/datajud_movimentos", params={"on_conflict": "process_code,codigo,data_hora"},
+                      headers={"Prefer": "resolution=ignore-duplicates,return=minimal", **extra},
+                      json=linhas[i:i + 200]).raise_for_status()
     # A cópia que a Linha do Tempo abre: fresca a cada ciclo, então a tela
     # nunca mais precisa buscar o DataJud ao vivo (18–53 s) ao ser aberta.
     carimbo = _agora()
@@ -298,13 +338,18 @@ def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None
     return _json_da_resposta(r.json()["choices"][0]["message"]["content"])
 
 
-def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO) -> dict:
+def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list[str] | None = None) -> dict:
+    """process_ids: só as intimações destes processos — o "Atualizar" de UM
+    processo não pode esperar a fila do escritório inteiro (40 × IA > 2 min)."""
     if not cfg.deepseek_key:
         return {"pulado": "sem DEEPSEEK_API_KEY"}
     http = _cliente(cfg)
+    filtro = {"process_id": f"in.({','.join(process_ids)})"} if process_ids else {}
+    if process_ids is not None and not process_ids:
+        return {"pendentes": 0, "analisadas": 0, "avisos": 0, "aplicado": aplicar}
     recentes = http.get("/djen_comunicacoes", params={
         "select": "id,texto,numero_processo,numero_processo_mascara,sigla_tribunal,data_disponibilizacao,process_id",
-        "order": "data_disponibilizacao.desc", "limit": "150"}).json()
+        "order": "data_disponibilizacao.desc", "limit": "150", **filtro}).json()
     ids = [x["id"] for x in recentes]
     feitas = {a["intimation_id"] for a in http.get("/intimation_ai_analysis", params={
         "select": "intimation_id", "intimation_id": f"in.({','.join(ids)})"}).json()} if ids else set()

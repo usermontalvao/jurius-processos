@@ -83,17 +83,23 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
     return res
 
 
-def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool) -> dict:
+def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list[str] | None = None) -> dict:
     """As entregas que substituem as rotinas do Supabase, cada uma no seu
-    interruptor e na sua execução: uma que falha não impede as outras."""
+    interruptor e na sua execução: uma que falha não impede as outras.
+
+    somente: números (sem máscara) — o "Atualizar" de um processo. procs é
+    sempre a lista INTEIRA do CRM (é dela que sai o vínculo das intimações)."""
+    alvo = set(somente) if somente is not None else None
+    ids = None if alvo is None else [p.id for p in procs if p.numero in alvo]
     entregas = []
     if cfg.alimentar_intimacoes:
-        entregas += [("alimentar_intimacoes", lambda: alimentar.intimacoes(banco, cfg, procs, aplicar)),
-                     ("revincular_orfas", lambda: alimentar.revincular_orfas(cfg, procs, aplicar))]
+        entregas.append(("alimentar_intimacoes", lambda: alimentar.intimacoes(banco, cfg, procs, aplicar, somente=alvo)))
+        if alvo is None:  # auto-cura é do ciclo, não do clique
+            entregas.append(("revincular_orfas", lambda: alimentar.revincular_orfas(cfg, procs, aplicar)))
     if cfg.alimentar_datajud:
-        entregas.append(("alimentar_datajud", lambda: alimentar.datajud(banco, cfg, procs, aplicar)))
+        entregas.append(("alimentar_datajud", lambda: alimentar.datajud(banco, cfg, procs, aplicar, somente=alvo)))
     if cfg.alimentar_ia:
-        entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar)))
+        entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar, process_ids=ids)))
     res = {}
     for nome, fazer in entregas:
         _etapa(f"Alimentando o CRM: {nome.replace('alimentar_', '').replace('_', ' ')}")

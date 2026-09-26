@@ -138,7 +138,12 @@ def atualizar(numero: str):
     n = cnj.limpar(numero)
     if not n:
         raise HTTPException(400, "número CNJ inválido")
-    with _trava:
+    # O ciclo de 2 h pode estar no meio (e leva minutos). Esperar por ele
+    # estouraria o limite do navegador; melhor dizer "ocupado" logo e a tela
+    # cai no caminho antigo (busca ao vivo, sem IA).
+    if not _trava.acquire(timeout=10):
+        raise HTTPException(409, "ciclo em andamento; tente de novo em alguns minutos")
+    try:
         banco.garantir_processo(n, "manual")
         djen = ClienteDJEN()
         inicio = (date.today() - timedelta(days=730)).isoformat()
@@ -152,8 +157,10 @@ def atualizar(numero: str):
                           cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
         # E grava no CRM o que a Linha do Tempo lê (intimações, DataJud, IA)
         # daquele processo: o "Atualizar" da tela reabre já com tudo novo.
-        agendador.alimentar_crm(cfg, banco, [p for p in procs if p.numero == n], aplicar=cfg.publicar)
-    return processo(n)
+        res = agendador.alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, somente=[n])
+    finally:
+        _trava.release()
+    return {**processo(n), "alimentar": res}
 
 
 @app.post("/clientes/{client_id}/vincular", dependencies=[Depends(autorizado)])

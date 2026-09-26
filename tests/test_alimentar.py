@@ -23,7 +23,7 @@ class Supabase:
         if req.method == "GET":
             return httpx.Response(200, json=self.tabelas.get(tabela, []))
         corpo = json.loads(req.content or b"null")
-        self.escritas.append((req.method, tabela, dict(req.url.params), corpo))
+        self.escritas.append((req.method, tabela, dict(req.url.params), corpo, req.headers.get("x-jurius-sem-aviso")))
         if "return=representation" in req.headers.get("prefer", ""):
             return httpx.Response(201, json=corpo if isinstance(corpo, list) else [corpo])
         return httpx.Response(201)
@@ -82,31 +82,73 @@ def _datajud(b, n):
     b.gravar_datajud(n, "ok", inst)
 
 
+def _posts_mov(sup):
+    return [(e[3], e[4]) for e in sup.escritas if e[1] == "datajud_movimentos"]
+
+
 def test_movimento_antigo_nunca_vai_para_o_portal(tmp_path, cfg, monkeypatch):
     b = Banco(tmp_path / "b.sqlite3")
     n = "2" * 20
     _datajud(b, n)
     cod = "2222222-22.2222.2.22.2222"
-    # Supabase já tem movimentos até 15/09: só a petição de 20/09 é nova.
-    sup = Supabase({"datajud_movimentos": [{"process_code": cod, "data_hora": "2026-09-15T00:00:00+00:00"}]})
+    # Supabase já tem o trânsito de 10/09 e parou em 15/09: a petição de 20/09
+    # é nova (com aviso); a procedência de 2024 é lacuna (entra calada).
+    sup = Supabase({"datajud_movimentos": [
+        {"process_code": cod, "codigo": 848, "data_hora": "2026-09-10T10:00:00+00:00"},
+        {"process_code": cod, "codigo": 1, "data_hora": "2026-09-15T00:00:00+00:00"}]})
     ligar(monkeypatch, sup)
     r = alimentar.datajud(b, cfg, [proc("p2", n, cod)], aplicar=True)
-    assert r["movimentos_novos"] == 1
-    novos = [e for e in sup.escritas if e[1] == "datajud_movimentos"][0][3]
-    assert [m["nome"] for m in novos] == ["Petição"]
+    assert r["movimentos_novos"] == 1 and r["lacunas_sem_aviso"] == 1
+    (calado, marca_calado), (novo, marca_novo) = _posts_mov(sup)
+    assert [m["nome"] for m in calado] == ["Procedência"] and marca_calado == "1"
+    assert [m["nome"] for m in novo] == ["Petição"] and marca_novo is None
     cache = [e for e in sup.escritas if e[1] == "processes"][0][3]
     assert len(cache["datajud_cache"]["processo"]["movimentos"]) == 3 and cache["datajud_synced_at"]
 
 
-def test_processo_sem_historico_no_supabase_so_leva_os_ultimos_30_dias(tmp_path, cfg, monkeypatch):
+def test_primeira_carga_do_processo_entra_inteira_e_calada(tmp_path, cfg, monkeypatch):
     b = Banco(tmp_path / "b.sqlite3")
     n = "3" * 20
     _datajud(b, n)
     sup = Supabase({"datajud_movimentos": []})
     ligar(monkeypatch, sup)
-    r = alimentar.datajud(b, cfg, [proc("p3", n, "x")], aplicar=True,
-                          agora=datetime(2026, 9, 26, tzinfo=timezone.utc))
-    assert r["movimentos_novos"] == 2  # trânsito (10/09) e petição (20/09); a sentença de 2024 não
+    r = alimentar.datajud(b, cfg, [proc("p3", n, "x")], aplicar=True)
+    assert r["movimentos_novos"] == 0 and r["lacunas_sem_aviso"] == 3
+    [(linhas, marca)] = _posts_mov(sup)
+    assert len(linhas) == 3 and marca == "1"
+
+
+def test_nada_faltando_nao_grava_movimento(tmp_path, cfg, monkeypatch):
+    b = Banco(tmp_path / "b.sqlite3")
+    n = "4" * 20
+    _datajud(b, n)
+    # Datas em formatos diferentes dos do DataJud: tem de reconhecer como iguais.
+    sup = Supabase({"datajud_movimentos": [
+        {"process_code": "c", "codigo": 219, "data_hora": "2024-03-01T10:00:00+00:00"},
+        {"process_code": "c", "codigo": 848, "data_hora": "2026-09-10T10:00:00.000Z"},
+        {"process_code": "c", "codigo": 85, "data_hora": "2026-09-20T10:00:00"}]})
+    ligar(monkeypatch, sup)
+    r = alimentar.datajud(b, cfg, [proc("p4", n, "c")], aplicar=True)
+    assert r["movimentos_novos"] == 0 and r["lacunas_sem_aviso"] == 0
+    assert all(not linhas for linhas, _ in _posts_mov(sup))
+
+
+def test_atualizar_um_processo_nao_toca_os_outros(tmp_path, cfg, monkeypatch):
+    b = Banco(tmp_path / "b.sqlite3")
+    um, outro = "5" * 20, "6" * 20
+    for i, (numero, h) in enumerate(((um, "h-um"), (outro, "h-outro"))):
+        b.garantir_processo(numero, "djen")
+        b.gravar_comunicacao({"id": i, "hash": h, "data_disponibilizacao": "2026-09-20", "texto": "t",
+                              "destinatarioadvogados": [], "destinatarios": []}, numero, "oab")
+    _datajud(b, outro)
+    sup = Supabase({"djen_comunicacoes": [], "datajud_movimentos": []})
+    ligar(monkeypatch, sup)
+    procs = [proc("p5", um, "c5"), proc("p6", outro, "c6")]
+    r = alimentar.intimacoes(b, cfg, procs, aplicar=True, hoje=date(2026, 9, 26), somente={um})
+    assert r["novas"] == 1
+    [linha] = [e for e in sup.escritas if e[1] == "djen_comunicacoes"][0][3]
+    assert linha["hash"] == "h-um" and linha["process_id"] == "p5"
+    assert alimentar.datajud(b, cfg, procs, aplicar=True, somente={um})["caches"] == 0
 
 
 def test_categoria_e_estagio_iguais_ao_datajud_sync():
