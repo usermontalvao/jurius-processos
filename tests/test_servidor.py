@@ -102,10 +102,15 @@ def test_atualizar_grava_so_aquele_processo_com_a_lista_inteira_do_crm(api, monk
     assert visto["ps"] == procs and visto["somente"] == [n]  # vínculo vem da lista inteira
 
 
-def test_atualizar_durante_o_ciclo_responde_ocupado_em_vez_de_travar(api, monkeypatch):
+def test_atualizar_durante_o_ciclo_entra_na_fila_em_vez_de_recusar(api, monkeypatch):
     import jurius_processos.api as m
     cli, _ = api
     from types import SimpleNamespace
     monkeypatch.setattr(m, "_trava", SimpleNamespace(acquire=lambda timeout=-1: False, locked=lambda: True))
-    r = cli.post("/processos/10141411620268110001/atualizar", headers={"Authorization": "Bearer segredo"})
-    assert r.status_code == 409
+    iniciadas = []
+    monkeypatch.setattr(m.threading, "Thread", lambda target, args, **k: SimpleNamespace(start=lambda: iniciadas.append(args)))
+    m._na_fila.clear()
+    for _ in range(2):  # dois cliques: um pedido só na fila
+        r = cli.post("/processos/10141411620268110001/atualizar", headers={"Authorization": "Bearer segredo"})
+        assert r.status_code == 202 and r.json()["na_fila"] is True
+    assert iniciadas == [("10141411620268110001",)]

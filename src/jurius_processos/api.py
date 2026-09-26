@@ -21,7 +21,7 @@ from datetime import date, timedelta
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import agendador, cnj, etapas, painel, publicar, vinculo
 from .banco import Banco
@@ -133,31 +133,58 @@ def processo(numero: str):
             "datajud_status": r["datajud_status"], "intimacoes": len(banco.comunicacoes(n))}
 
 
+def _executar_atualizacao(n: str) -> dict:
+    """O "Atualizar" de um processo. Chamar com _trava já tomada."""
+    banco.garantir_processo(n, "manual")
+    djen = ClienteDJEN()
+    inicio = (date.today() - timedelta(days=730)).isoformat()
+    for item in djen.do_processo(n, inicio, date.today().isoformat()):
+        banco.gravar_comunicacao(item, n, "processo")
+    for numero_, status, inst, erro in ClienteDataJud(cfg.datajud_key).lote([n]):
+        banco.gravar_datajud(numero_, status, inst, erro)
+    crm, _, clientes, procs = etapas.carregar_crm(cfg)
+    etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro(), agenda=crm.agenda(procs), prazos=crm.prazos(procs))
+    publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n],
+                      cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
+    # E grava no CRM o que a Linha do Tempo lê (intimações, DataJud, IA, ficha)
+    # daquele processo: o "Atualizar" da tela reabre já com tudo novo.
+    return agendador.alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, somente=[n])
+
+
+_na_fila: set[str] = set()
+_fila_trava = threading.Lock()
+
+
+def _atualizar_depois(n: str) -> None:
+    """Espera o ciclo terminar e faz o pedido. O ciclo de 2 h (e o do boot)
+    segura a trava por ~12 min; recusar ali fazia o "Atualizar" cair no
+    caminho reserva calado (26/09/2026)."""
+    try:
+        with _trava:
+            _executar_atualizacao(n)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("atualização na fila falhou (%s)", n)
+    finally:
+        with _fila_trava:
+            _na_fila.discard(n)
+
+
 @app.post("/processos/{numero}/atualizar", dependencies=[Depends(autorizado)])
 def atualizar(numero: str):
     n = cnj.limpar(numero)
     if not n:
         raise HTTPException(400, "número CNJ inválido")
-    # O ciclo de 2 h pode estar no meio (e leva minutos). Esperar por ele
-    # estouraria o limite do navegador; melhor dizer "ocupado" logo e a tela
-    # cai no caminho antigo (busca ao vivo, sem IA).
+    # Ciclo em andamento: o pedido entra na fila (202) e é feito assim que a
+    # trava soltar; a tela avisa e mostra o que já está no banco.
     if not _trava.acquire(timeout=10):
-        raise HTTPException(409, "ciclo em andamento; tente de novo em alguns minutos")
+        with _fila_trava:
+            if n not in _na_fila:
+                _na_fila.add(n)
+                threading.Thread(target=_atualizar_depois, args=(n,), daemon=True, name=f"fila-{n}").start()
+        return JSONResponse(status_code=202, content={"na_fila": True, "numero": n,
+                                                      "motivo": "ciclo em andamento; o processo será atualizado em seguida"})
     try:
-        banco.garantir_processo(n, "manual")
-        djen = ClienteDJEN()
-        inicio = (date.today() - timedelta(days=730)).isoformat()
-        for item in djen.do_processo(n, inicio, date.today().isoformat()):
-            banco.gravar_comunicacao(item, n, "processo")
-        for numero_, status, inst, erro in ClienteDataJud(cfg.datajud_key).lote([n]):
-            banco.gravar_datajud(numero_, status, inst, erro)
-        crm, _, clientes, procs = etapas.carregar_crm(cfg)
-        etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro(), agenda=crm.agenda(procs), prazos=crm.prazos(procs))
-        publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n],
-                          cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
-        # E grava no CRM o que a Linha do Tempo lê (intimações, DataJud, IA)
-        # daquele processo: o "Atualizar" da tela reabre já com tudo novo.
-        res = agendador.alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, somente=[n])
+        res = _executar_atualizacao(n)
     finally:
         _trava.release()
     return {**processo(n), "alimentar": res}
