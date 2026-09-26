@@ -30,17 +30,3 @@ jobs:
         with:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/jurius-processos:latest
-
-  servidor:
-    needs: imagem
-    runs-on: ubuntu-latest
-    steps:
-      - uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVIDOR_HOST }}
-          username: ${{ secrets.SERVIDOR_USUARIO }}
-          key: ${{ secrets.SERVIDOR_CHAVE_SSH }}
-          script: |
-            cd /opt/jurius-processos
-            docker compose pull cerebro
-            docker compose up -d
