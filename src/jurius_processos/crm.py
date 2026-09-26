@@ -26,6 +26,7 @@ class ProcessoCRM:
     client_id: str
     status: str | None
     status_manual: bool
+    codigo: str | None = None  # process_code como está no CRM (com máscara)
 
 
 class CRM:
@@ -128,6 +129,7 @@ class CRM:
 
     def processos(self) -> list[ProcessoCRM]:
         return [
-            ProcessoCRM(p["id"], cnj.limpar(p.get("process_code")), p["client_id"], p.get("status"), bool(p.get("status_manual")))
+            ProcessoCRM(p["id"], cnj.limpar(p.get("process_code")), p["client_id"], p.get("status"), bool(p.get("status_manual")),
+                        p.get("process_code"))
             for p in self._tudo("processes", "id,process_code,client_id,status,status_manual")
         ]

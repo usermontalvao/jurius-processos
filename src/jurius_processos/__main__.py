@@ -34,6 +34,8 @@ def main():
     r = sub.add_parser("relatorio")
     r.add_argument("--saida", default="dados/relatorio.md")
     sub.add_parser("ciclo")
+    al = sub.add_parser("alimentar")  # sem --aplicar é ensaio: conta o que seria gravado
+    al.add_argument("--aplicar", action="store_true")
     pb = sub.add_parser("publicar")
     pb.add_argument("--aplicar", action="store_true")
     a = p.parse_args()
@@ -59,6 +61,12 @@ def main():
     elif a.cmd == "relatorio":
         _, _, clientes, procs = etapas.carregar_crm(cfg)
         res = {"arquivo": relatorio.gerar(banco, clientes, procs, a.saida)}
+    elif a.cmd == "alimentar":
+        from dataclasses import replace
+        from . import agendador
+        _, _, _, procs = etapas.carregar_crm(cfg)
+        todos = replace(cfg, alimentar_intimacoes=True, alimentar_datajud=True, alimentar_ia=bool(cfg.deepseek_key))
+        res = agendador.alimentar_crm(todos, banco, procs, aplicar=a.aplicar)
     elif a.cmd == "publicar":
         _, _, _, procs = etapas.carregar_crm(cfg)
         res = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key,

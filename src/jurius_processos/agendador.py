@@ -16,7 +16,7 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import etapas, publicar
+from . import alimentar, etapas, publicar
 from .banco import Banco
 from .config import Config
 
@@ -79,6 +79,32 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
     }
     res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar,
                                         cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
+    res["alimentar"] = alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar)
+    return res
+
+
+def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool) -> dict:
+    """As entregas que substituem as rotinas do Supabase, cada uma no seu
+    interruptor e na sua execução: uma que falha não impede as outras."""
+    entregas = []
+    if cfg.alimentar_intimacoes:
+        entregas += [("alimentar_intimacoes", lambda: alimentar.intimacoes(banco, cfg, procs, aplicar)),
+                     ("revincular_orfas", lambda: alimentar.revincular_orfas(cfg, procs, aplicar))]
+    if cfg.alimentar_datajud:
+        entregas.append(("alimentar_datajud", lambda: alimentar.datajud(banco, cfg, procs, aplicar)))
+    if cfg.alimentar_ia:
+        entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar)))
+    res = {}
+    for nome, fazer in entregas:
+        _etapa(f"Alimentando o CRM: {nome.replace('alimentar_', '').replace('_', ' ')}")
+        exec_id = banco.abrir_execucao(nome)
+        try:
+            res[nome] = fazer()
+            banco.fechar_execucao(exec_id, True, res[nome])
+        except Exception as e:  # noqa: BLE001
+            log.exception("%s falhou", nome)
+            res[nome] = {"erro": f"{type(e).__name__}: {e}"[:300]}
+            banco.fechar_execucao(exec_id, False, res[nome])
     return res
 
 

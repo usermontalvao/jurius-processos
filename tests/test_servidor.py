@@ -70,3 +70,14 @@ def test_chave_nova_sb_secret_vai_so_no_apikey():
     from jurius_processos.config import cabecalhos_supabase
     assert cabecalhos_supabase("sb_secret_abc") == {"apikey": "sb_secret_abc"}
     assert cabecalhos_supabase("eyJx")["Authorization"] == "Bearer eyJx"
+
+
+def test_crm_pode_chamar_o_servico_pelo_navegador(api):
+    cli, _ = api
+    r = cli.options("/processos/1/atualizar", headers={
+        "Origin": "https://jurius.com.br", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization"})
+    assert r.headers.get("access-control-allow-origin") == "https://jurius.com.br"
+    r = cli.options("/processos/1/atualizar", headers={
+        "Origin": "https://site-qualquer.com", "Access-Control-Request-Method": "POST"})
+    assert r.headers.get("access-control-allow-origin") is None

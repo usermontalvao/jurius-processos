@@ -26,6 +26,13 @@ def _descreve_chave() -> str:
     return f"{tipo}, {len(k)} caracteres"
 
 
+def _o_que_alimenta() -> dict:
+    from .config import carregar
+    c = carregar()
+    return {"intimacoes": c.alimentar_intimacoes, "datajud": c.alimentar_datajud,
+            "ia": c.alimentar_ia and bool(c.deepseek_key), "ia_sem_chave": c.alimentar_ia and not c.deepseek_key}
+
+
 def dados(banco: Banco, ocupado: bool) -> dict:
     fases, vinculos, situacoes = Counter(), Counter(), Counter()
     fora = 0
@@ -58,6 +65,7 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "carga_feita": banco.carga_feita(),
         "versao": __import__("os").environ.get("JURIUS_VERSAO", "local"),
         "chave_supabase": _descreve_chave(),
+        "alimenta": _o_que_alimenta(),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         # Só a falha que ainda vale: se depois dela alguma etapa terminou bem,
         # o painel não assusta com erro antigo (a carga interrompida do 1º boot).
@@ -98,6 +106,7 @@ code{font-size:11px;color:var(--mut);word-break:break-word}
 <div class="sub">Descobre pelo DJEN (OAB e nome completo), enriquece no DataJud, analisa e publica no CRM. Ciclo automático a cada 2 h, das 06h às 22h (Cuiabá).</div></div>
 <div class="sp"></div><span id="estado" class="sub"></span><button id="rodar">Rodar ciclo agora</button></header>
 <div class="ind" id="ind"><span class="luz" id="luz"></span><div><b id="ind-t">Conectando…</b><div class="det" id="ind-d"></div></div><div class="sp"></div><span class="sub" id="versao"></span></div>
+<div class="sub" id="alimenta" style="margin:-4px 2px 12px"></div>
 <div id="aviso"></div>
 <div class="grid" id="nums"></div>
 <div class="cols" id="dist"></div>
@@ -132,6 +141,9 @@ async function carregar(){
   document.getElementById('luz').className='luz '+cor;
   document.getElementById('ind-t').textContent=t;
   document.getElementById('ind-d').innerHTML=det;
+  const al=d.alimenta||{};
+  const marca=(on,t)=>(on?'✓ ':'✗ ')+t;
+  document.getElementById('alimenta').textContent='Alimenta o CRM: '+[marca(al.intimacoes,'intimações'),marca(al.datajud,'DataJud'),marca(al.ia,'IA')+(al.ia_sem_chave?' (falta DEEPSEEK_API_KEY)':'')].join(' · ')+' — o que está ✗ continua com a rotina antiga do Supabase.';
   document.getElementById('versao').textContent='versão '+(d.versao||'?')+' · chave do Supabase: '+(d.chave_supabase||'?');
   document.getElementById('estado').textContent='atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;

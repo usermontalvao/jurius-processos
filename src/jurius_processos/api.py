@@ -63,6 +63,19 @@ async def ciclo_de_vida(_app):
 
 app = FastAPI(title="Jurius Processos", lifespan=ciclo_de_vida)
 
+# O botão "Atualizar" da Linha do Tempo chama este serviço direto do CRM
+# (jurius.com.br), com o login do usuário. Só essas origens podem.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+import os as _os  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _os.environ.get(
+        "JURIUS_ORIGENS", "https://jurius.com.br,https://www.jurius.com.br,http://localhost:3000").split(",") if o.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def raiz():
@@ -137,6 +150,9 @@ def atualizar(numero: str):
         etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro())
         publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n],
                           cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
+        # E grava no CRM o que a Linha do Tempo lê (intimações, DataJud, IA)
+        # daquele processo: o "Atualizar" da tela reabre já com tudo novo.
+        agendador.alimentar_crm(cfg, banco, [p for p in procs if p.numero == n], aplicar=cfg.publicar)
     return processo(n)
 
 

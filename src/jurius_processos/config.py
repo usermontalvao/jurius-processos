@@ -30,6 +30,13 @@ class Config:
     # risco apontado na avaliação de 24/09.
     cadastrar_auto: bool
     atualizar_status: bool
+    # Alimentar o CRM no lugar das rotinas do Supabase (crons 5, 16 e 11).
+    # Cada um liga sozinho; desligado, a rotina antiga continua valendo.
+    alimentar_intimacoes: bool
+    alimentar_datajud: bool
+    alimentar_ia: bool
+    deepseek_key: str
+    deepseek_modelo: str
 
 
 def _limpo(nome: str, padrao: str = "") -> str:
@@ -65,4 +72,10 @@ def carregar() -> Config:
         publicar=os.environ.get("JURIUS_PUBLICAR", "0") == "1",
         cadastrar_auto=os.environ.get("JURIUS_CADASTRAR_AUTO", "0") == "1",
         atualizar_status=os.environ.get("JURIUS_ATUALIZAR_STATUS", "0") == "1",
+        alimentar_intimacoes=_limpo("JURIUS_ALIMENTAR_INTIMACOES", "0") == "1",
+        alimentar_datajud=_limpo("JURIUS_ALIMENTAR_DATAJUD", "0") == "1",
+        alimentar_ia=_limpo("JURIUS_ALIMENTAR_IA", "0") == "1",
+        deepseek_key=_limpo("DEEPSEEK_API_KEY"),
+        # A mesma calibração da analyze-intimations: o degrau "rápido" da escada.
+        deepseek_modelo=_limpo("DEEPSEEK_MODELO", "deepseek-flash"),
     )
