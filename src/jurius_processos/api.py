@@ -152,7 +152,7 @@ def atualizar(numero: str):
         for numero_, status, inst, erro in ClienteDataJud(cfg.datajud_key).lote([n]):
             banco.gravar_datajud(numero_, status, inst, erro)
         crm, _, clientes, procs = etapas.carregar_crm(cfg)
-        etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro())
+        etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro(), agenda=crm.agenda(procs))
         publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n],
                           cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
         # E grava no CRM o que a Linha do Tempo lê (intimações, DataJud, IA)
@@ -182,7 +182,7 @@ def vincular_cliente(client_id: str):
         achados = vinculo.processos_do_nome(cliente.nome, partes)
         numeros = [n for n, _ in achados]
         if numeros:
-            etapas.analisar(banco, clientes, procs, somente=numeros, financeiro=crm.financeiro())
+            etapas.analisar(banco, clientes, procs, somente=numeros, financeiro=crm.financeiro(), agenda=crm.agenda(procs))
             publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=numeros,
                               cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
     return {"cliente": cliente.nome, "processos": [

@@ -127,6 +127,29 @@ class CRM:
             out.setdefault(chave, []).append(a)
         return out
 
+    def agenda(self, procs: list[ProcessoCRM]) -> dict[str, list[dict]]:
+        """Audiências da agenda do CRM por processo: {process_id: [{quando, titulo, status}]}.
+
+        Em 26/09/2026 só 56 das 137 audiências tinham processo; 74 só o cliente.
+        Sem processo, vale o cliente que tem UM processo não arquivado (27 delas);
+        com dois ou mais, não há como saber de qual é e a audiência fica de fora.
+        """
+        ativos: dict[str, list[str]] = {}
+        for p in procs:
+            if p.client_id and (p.status or "") != "arquivado":
+                ativos.setdefault(p.client_id, []).append(p.id)
+        out: dict[str, list[dict]] = {}
+        for e in self._tudo("calendar_events", "process_id,client_id,title,start_at,status",
+                            {"event_type": "eq.hearing"}):
+            pid = e.get("process_id")
+            if not pid:
+                ids = ativos.get(e.get("client_id") or "", [])
+                pid = ids[0] if len(ids) == 1 else None
+            if pid:
+                out.setdefault(pid, []).append({"quando": e.get("start_at"), "titulo": e.get("title") or "",
+                                                "status": e.get("status")})
+        return out
+
     def processos(self) -> list[ProcessoCRM]:
         return [
             ProcessoCRM(p["id"], cnj.limpar(p.get("process_code")), p["client_id"], p.get("status"), bool(p.get("status_manual")),

@@ -53,9 +53,19 @@ CLASSES_EXECUCAO = {159, 1116, 12154, 1111, 994}
 GRAUS_RECURSAIS = {"G2", "TR", "SUP", "TRU", "TNU"}
 
 # Frases de dispositivo lidas no texto do DJEN (texto já em minúsculas).
-_EXTINTA_EXECUCAO = re.compile(r"extint[ao]\s+(a|à)\s+(presente\s+)?execu|extingo\s+a\s+(presente\s+)?execu")
+_EXTINTA_EXECUCAO = re.compile(
+    r"extint[ao]\s+(a|à)\s+(presente\s+)?execu|extingo\s+a\s+(presente\s+)?execu"
+    # Extinção pelo pagamento dita de outro jeito (caso 1028965-77, 16/09/2026):
+    # "satisfeita a execução... art. 924, II... DECLARO EXTINTO O PROCESSO".
+    # "Declaro extinto o processo" sozinho NÃO entra: é também o art. 485.
+    r"|satisfeita\s+a\s+(obriga|execu)|\b924\s*,?\s*(inciso\s+)?ii\b|extin[çc][ãa]o\s+do\s+(processo|feito)\s+pelo\s+pagamento")
+# Início do cumprimento de sentença lido no DJEN: a intimação do art. 523 chega
+# semanas antes da evolução de classe no DataJud.
+_INICIO_CUMPRIMENTO = re.compile(
+    r"pagamento\s+volunt[áa]rio|\bart(igo|\.)?\s*523\b|impugna[çc][ãa]o\s+ao\s+cumprimento\s+de\s+senten")
 _CIENCIA_SENTENCA = re.compile(r"ci[êe]ncia\s+d[ao]\s+senten[çc]a")
-_ALVARA_TEXTO = re.compile(r"expedi[çc][ãa]o\s+d[oe]\s+alvar[áa]|alvar[áa]\s+eletr[ôo]nico|requisi[çc][ãa]o\s+de\s+pequeno\s+valor")
+_ALVARA_TEXTO = re.compile(r"expedi[çc][ãa]o\s+d[oe]\s+alvar[áa]|alvar[áa]\s+eletr[ôo]nico|requisi[çc][ãa]o\s+de\s+pequeno\s+valor"
+                           r"|expe[çc]o\s+(o\s+)?(competente\s+)?alvar[áa]|alvar[áa]\s+finalizado")
 _HOMOLOGO_ACORDO = re.compile(r"homologo\s+o\s+acordo|homologo,?\s+por\s+senten")
 _JULGO = re.compile(r"julgo\s+(parcialmente\s+)?(im)?procedente")
 # Formatos reais: "designo audiência de instrução ... para o dia 26/07/2023" (TJMT),
@@ -167,7 +177,21 @@ def fase_por_classe(classe_codigo: int | None, classe_nome: str | None) -> str |
     return None
 
 
-def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje: date) -> dict:
+def _agenda_audiencias(agenda: list[dict] | None) -> list[tuple[datetime, str]]:
+    """(quando, título normalizado) das audiências da agenda do CRM, em ordem; sem as canceladas."""
+    out = []
+    for e in agenda or []:
+        q = _data(e.get("quando"))
+        if q and "cancel" not in _norm(e.get("status")):
+            out.append((q, _norm(e.get("titulo"))))
+    return sorted(out)
+
+
+def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje: date,
+             agenda: list[dict] | None = None) -> dict:
+    """agenda: audiências da agenda do CRM ({quando, titulo, status}). Depois da
+    audiência inicial, o DataJud e o DJEN do TRT costumam calar por meses — a
+    instrução marcada na audiência só existe na agenda do escritório."""
     movs = _movimentos(instancias)
     marcos: list[dict] = []
     alcancou: dict[str, datetime] = {}  # fase → quando chegou nela pela 1ª vez
@@ -288,6 +312,10 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             cumprimento_inicio = cumprimento_inicio or d
             chegou("cumprimento_sentenca", d)
             marcos.append({"quando": d, "marco": "extincao_execucao", "nome": "Execução extinta (DJEN)", "grau": None})
+        elif _INICIO_CUMPRIMENTO.search(t):
+            cumprimento_inicio = cumprimento_inicio or d
+            chegou("cumprimento_sentenca", d)
+            marcos.append({"quando": d, "marco": "cumprimento", "nome": "Cumprimento de sentença (DJEN)", "grau": None})
         elif _HOMOLOGO_ACORDO.search(t):
             chegou("sentenciado", d)
             julgamentos_favoraveis.append(d)
@@ -306,6 +334,37 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             tipo, quando_aud = aud
             djen_audiencia = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(d), "data": _dia(quando_aud)}
             chegou("instrucao" if tipo == "instrução" else "conhecimento", d)
+
+    # ── agenda do CRM ───────────────────────────────────────────────────────
+    # Audiência de tipo não dito no título ("AUDIÊNCIA PRESENCIAL") marcada
+    # DEPOIS de uma conciliação/inicial que já aconteceu é a de instrução
+    # (caso 0000691-24.2026.5.23.0006, 26/09/2026).
+    hoje_dt = datetime.combine(hoje, datetime.min.time())
+    conciliacoes_passadas = [a["quando"] for a in audiencias
+                             if "concilia" in _norm(a["tipo"]) and _norm(a["situacao"]) == "realizada"]
+    if djen_audiencia and djen_audiencia["data"] and djen_audiencia["tipo"] == "conciliação" \
+            and djen_audiencia["data"] < hoje.isoformat():
+        conciliacoes_passadas.append(datetime.fromisoformat(djen_audiencia["data"]))
+    audiencias_datadas_passadas = [datetime.fromisoformat(djen_audiencia["data"])] \
+        if djen_audiencia and djen_audiencia["data"] and djen_audiencia["data"] < hoje.isoformat() else []
+    agenda_futura = None
+    for q, titulo in _agenda_audiencias(agenda):
+        tipo = _tipo_audiencia(titulo)
+        # Dia seguinte em diante: no mesmo dia é a própria conciliação lançada
+        # na agenda com outro nome ("Audiência Online — ...").
+        if tipo == "audiência" and any(c.date() < q.date() for c in conciliacoes_passadas):
+            tipo = "instrução"
+        if q < hoje_dt:
+            audiencias_datadas_passadas.append(q)
+            if tipo == "conciliação":
+                conciliacoes_passadas.append(q)
+        if tipo == "instrução":
+            chegou("instrucao", min(q, hoje_dt))
+        elif tipo == "conciliação":
+            chegou("conhecimento", min(q, hoje_dt))
+        if q >= hoje_dt and agenda_futura is None:
+            agenda_futura = {"tipo": tipo, "situacao": "designada", "designada_em": None, "data": _dia(q),
+                             "fonte": "agenda"}
 
     # ── classe atual (DataJud da instância mais recente, senão DJEN) ─────────
     inst_recente = max(instancias, key=lambda i: i.get("dataHoraUltimaAtualizacao") or "", default=None)
@@ -371,6 +430,23 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
                 audiencia = djen_audiencia
         elif (hoje - date.fromisoformat(djen_audiencia["designada_em"])).days <= 120:
             audiencia = djen_audiencia
+    # "Designada" no DataJud não traz a data: se uma audiência datada (DJEN ou
+    # agenda) marcada depois dessa designação já passou, ela aconteceu.
+    if audiencia and not audiencia.get("data") and audiencia.get("designada_em") \
+            and any(_dia(q) >= audiencia["designada_em"] for q in audiencias_datadas_passadas):
+        if "concilia" in _norm(audiencia["tipo"]):
+            conciliacoes_passadas.append(max(audiencias_datadas_passadas))
+        audiencia = None
+    # A agenda do escritório é a fonte mais fiel da DATA da próxima audiência;
+    # o tipo, quando o título não diz ("Audiência Online — FULANO"), vem do
+    # tribunal (DataJud/DJEN) — senão a conciliação virava "audiência" e o
+    # estágio caía para andamento.
+    if agenda_futura and situacao == "ativo" and (
+            not audiencia or not audiencia.get("data") or agenda_futura["data"] <= audiencia["data"]):
+        if agenda_futura["tipo"] == "audiência" and audiencia and _norm(audiencia["tipo"]) != "audiencia" \
+                and (not audiencia.get("data") or audiencia["data"] == agenda_futura["data"]):
+            agenda_futura = {**agenda_futura, "tipo": audiencia["tipo"]}
+        audiencia = agenda_futura
 
     # ── pendências ────────────────────────────────────────────────────────
     pend: list[dict] = []
@@ -425,6 +501,10 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
     status_crm = "arquivado" if situacao == "arquivado" else PARA_STATUS_CRM.get(fase)
     if status_crm == "andamento" and audiencia and "concilia" in _norm(audiencia["tipo"]):
         status_crm = "conciliacao"
+    elif status_crm == "andamento" and conciliacoes_passadas:
+        # Conciliação feita e sem acordo: é a fase da defesa. "andamento" era
+        # desenhado em cima de Instrução na barra de estágios da Linha do Tempo.
+        status_crm = "contestacao"
 
     ajuizamentos = [d for d in (_data(i.get("dataAjuizamento")) for i in instancias) if d]
     return {

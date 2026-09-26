@@ -75,7 +75,7 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
             banco, [p.numero for p in procs if p.numero], (date.today() - timedelta(days=10)).isoformat()),
         "do_crm": etapas.incluir_do_crm(banco, procs),
         "enriquecer": etapas.enriquecer(banco, cfg),
-        "analisar": etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro()),
+        "analisar": etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro(), agenda=crm.agenda(procs)),
     }
     res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar,
                                         cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
