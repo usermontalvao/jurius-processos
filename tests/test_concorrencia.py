@@ -44,3 +44,11 @@ def test_execucao_sem_fim_e_fechada_ao_subir(tmp_path):
     r = b.con.execute("select ok, json_extract(resumo,'$.erro') e from execucoes").fetchone()
     assert r["ok"] == 0 and "interrompida" in r["e"]
     assert not b.carga_feita()
+
+
+def test_carga_em_curso_nao_conta_como_feita(tmp_path):
+    b = Banco(tmp_path / "t.sqlite3")
+    b.abrir_execucao("carga_completa")  # em curso
+    i = b.abrir_execucao("descobrir")
+    b.fechar_execucao(i, True, {"inicio": "2023-01-01"})  # 1ª etapa dela terminou
+    assert not b.carga_feita()

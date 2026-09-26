@@ -173,9 +173,15 @@ class Banco:
         Banco vindo da máquina de desenvolvimento conta: lá a carga foi feita
         etapa por etapa (`descobrir --desde 2023-01-01`).
         """
+        # Onde já existe registro de carga_completa, só ela vale: o `descobrir`
+        # de 2023 é a 1ª etapa da própria carga e terminava antes do resto
+        # (o painel dizia "carga feita" com o DataJud ainda por buscar).
+        if self.con.execute("select 1 from execucoes where etapa='carga_completa' limit 1").fetchone():
+            return bool(self.con.execute(
+                "select 1 from execucoes where etapa='carga_completa' and ok=1 limit 1").fetchone())
         return bool(self.con.execute(
-            "select 1 from execucoes where ok=1 and (etapa='carga_completa' "
-            "or (etapa='descobrir' and json_extract(resumo,'$.inicio') like '2023-%')) limit 1").fetchone())
+            "select 1 from execucoes where ok=1 and etapa='descobrir' "
+            "and json_extract(resumo,'$.inicio') like '2023-%' limit 1").fetchone())
 
     def abrir_execucao(self, etapa: str) -> int:
         return self.con.execute("insert into execucoes (etapa, inicio) values (?,?)", (etapa, agora())).lastrowid
