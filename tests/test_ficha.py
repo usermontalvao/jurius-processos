@@ -177,3 +177,34 @@ def test_mudar_a_versao_do_pedido_refaz_os_resumos(monkeypatch):
     a = ficha.assinatura(_entradas())
     monkeypatch.setattr(ficha, "VERSAO_RESUMO", ficha.VERSAO_RESUMO + 1)
     assert ficha.assinatura(_entradas()) != a
+
+
+def test_partes_lidas_no_texto_quando_o_djen_so_traz_o_cliente():
+    # Textos reais (26/09/2026).
+    hiago = ["PROCESSO n. 1051311-22.2026.8.11.0001 Valor da causa: R$ 10.000,00 POLO ATIVO: Nome: HIAGO DE OLIVEIRA LIMA "
+             "Endereço: RUA VITÓRIA-RÉGIA, 13 POLO PASSIVO: Nome: NU PAGAMENTOS S.A. - INSTITUICAO DE PAGAMENTO Endereço: X",
+             "Cuida-se de AÇÃO DE OBRIGAÇÃO DE FAZER, ajuizada por HIAGO DE OLIVEIRA LIMA em face de NU PAGAMENTOS S/A, pleiteando"]
+    p = ficha.partes_do_texto(hiago)
+    assert p["A"] == ["HIAGO DE OLIVEIRA LIMA"]
+    assert p["P"] == ["NU PAGAMENTOS S.A. - INSTITUICAO DE PAGAMENTO"]
+    luana = ["ATOrd 0000691-24.2026.5.23.0006 RECLAMANTE: LUANA ALENCAR CASTRO RECLAMADO: CASAS CAMINHO REDENTOR 1. DESIGNO audiência"]
+    assert ficha.partes_do_texto(luana) == {"A": ["LUANA ALENCAR CASTRO"], "P": ["CASAS CAMINHO REDENTOR"]}
+    ramona = ["Processo: 1028965-77. AUTOR: RAMONA APARECIDA RODRIGUES MARTINEZ REU: MERCADO PAGO INSTITUICAO DE PAGAMENTO LTDA Vistos, etc"]
+    assert ficha.partes_do_texto(ramona)["P"] == ["MERCADO PAGO INSTITUICAO DE PAGAMENTO LTDA"]
+
+
+def test_ficha_completa_so_o_polo_que_falta():
+    analise = {"pendencias": []}
+    f = ficha.montar(analise, {"partes": {"A": ["HIAGO"], "P": []}}, HOJE, [],
+                     ["REU: EMPRESA QUALQUER LTDA Vistos", "AUTOR: OUTRO NOME Vistos"])
+    assert f["polo_ativo"] == "HIAGO" and f["polo_passivo"] == "EMPRESA QUALQUER LTDA"
+
+
+def test_limpeza_das_partes():
+    assert ficha.limpar_partes(["INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS ATO ORDINATÓRIO",
+                                "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS SENTENÇA TIPO"]) == [
+        "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"]
+    assert ficha.limpar_partes(["N. E. S. D. Q.", "USUáRIO DO SISTEMA 2", "N. E. S. D. Q. REPRESENTANTES",
+                                "PEDRO RODRIGUES MONTALVAO NETO - MT30021-A"]) == ["N. E. S. D. Q."]
+    # O advogado pode ser parte de verdade (1038323-66: "POLO PASSIVO: REU: PEDRO ...").
+    assert ficha.limpar_partes(["PEDRO RODRIGUES MONTALVAO NETO"]) == ["PEDRO RODRIGUES MONTALVAO NETO"]

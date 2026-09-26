@@ -339,3 +339,30 @@ def test_status_desde_diz_de_quando_e_o_fato():
     agenda[1]["criado_em"] = "2026-08-20T15:00:00+00:00"   # instrução lançada na agenda no dia da inicial
     a = analisar("n", datajud, coms, HOJE, agenda=agenda)
     assert a["status_crm"] == "instrucao" and a["status_desde"] == "2026-08-20"
+
+
+def test_hora_da_audiencia_no_texto_do_djen():
+    from jurius_processos.fases import hora_da_audiencia
+    # Caso real 0000987-55.2026.5.23.0003 (Paulo): "05/11/2026, às 09h".
+    assert hora_da_audiencia("designa audiência inicial telepresencial para 05/11/2026, às 09h, pelo rito", "2026-11-05") == "09:00"
+    assert hora_da_audiencia("no dia 20/08/2026, às 08:25 horas (horário de Cuiabá)", "2026-08-20") == "08:25"
+    assert hora_da_audiencia("audiência em 05/11/2026. Prazo de 10 dias", "2026-11-05") is None
+    datajud = [inst("G1", [mov(26, "2026-09-18")])]
+    coms = [{"data": "2026-09-21", "texto": "designa audiência inicial telepresencial de conciliação para 05/11/2026, às 09h"}]
+    a = analisar("n", datajud, coms, HOJE)
+    assert a["audiencia"]["data"] == "2026-11-05" and a["audiencia"]["hora"] == "09:00"
+
+
+def test_hora_da_agenda_em_cuiaba():
+    datajud = [inst("JE", [mov(26, "2026-07-03")])]
+    a = analisar("n", datajud, [], HOJE, agenda=[{"quando": "2026-11-18T13:00:00+00:00",
+                                                  "titulo": "Audiência de Instrução", "status": "pendente"}])
+    assert a["audiencia"]["hora"] == "09:00" and a["audiencia"]["data"] == "2026-11-18"
+
+
+def test_tipo_da_audiencia_do_datajud_normalizado():
+    datajud = [inst("JE", [mov(26, "2026-08-01"),
+                           mov(12740, "2026-08-14", "de Conciliação", situacao_da_audiencia=("designada", 1))])]
+    a = analisar("n", datajud, [], HOJE, agenda=[{"quando": "2026-10-13T14:00:00Z", "titulo": "Audiência Online — HIAGO",
+                                                  "status": "pendente"}])
+    assert a["audiencia"]["tipo"] == "conciliação"

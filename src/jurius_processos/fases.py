@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 # ── tabelas de códigos (TPU) ────────────────────────────────────────────────
 DISTRIBUICAO = {26, 36}
@@ -77,6 +77,24 @@ _AUDIENCIA_SEM_DATA = re.compile(
     r"aguarde-se\s+(?:a\s+)?audi[êe]ncia\s+de\s+(?:concilia|instru)\w*\s+(?:j[áa]\s+)?designada")
 
 
+_HORA_DEPOIS_DA_DATA = r"{data}[^.;]{{0,60}}?(?:[àa]s|,|hor[áa]rio:?)\s*(\d{{1,2}})\s*(?:h|:|horas?)\s*(\d{{2}})?"
+
+
+def hora_da_audiencia(texto: str | None, data: str | None) -> str | None:
+    """"05/11/2026, às 09h" → "09:00"; "20/08/2026, às 08:25 horas" → "08:25".
+    data em ISO (2026-11-05); a hora só vale se vier logo depois dessa data."""
+    if not texto or not data:
+        return None
+    t = re.sub(r"\s+", " ", texto.lower())
+    a, m, d = data[:10].split("-")
+    for fmt in (f"{d}/{m}/{a}", f"{int(d)}/{int(m)}/{a}"):
+        if r := re.search(_HORA_DEPOIS_DA_DATA.format(data=re.escape(fmt)), t):
+            h, mi = int(r.group(1)), int(r.group(2) or 0)
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                return f"{h:02d}:{mi:02d}"
+    return None
+
+
 def audiencia_no_texto(texto: str) -> tuple[str, datetime | None] | None:
     """(tipo, data) da audiência mais adiante citada no texto, ou None."""
     t = re.sub(r"\s+", " ", (texto or "").lower())
@@ -98,7 +116,7 @@ def audiencia_no_texto(texto: str) -> tuple[str, datetime | None] | None:
 
 
 def _tipo_audiencia(trecho: str) -> str:
-    if "instru" in trecho:
+    if "instru" in trecho or re.search(r"\buna\b", trecho):
         return "instrução"
     if "concilia" in trecho or "inicia" in trecho:  # "inicial" no TRT é a de conciliação
         return "conciliação"
@@ -332,7 +350,8 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             alvaras.append(d)
         if aud := audiencia_no_texto(com.get("texto")):
             tipo, quando_aud = aud
-            djen_audiencia = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(d), "data": _dia(quando_aud)}
+            djen_audiencia = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(d), "data": _dia(quando_aud),
+                              "hora": hora_da_audiencia(com.get("texto"), _dia(quando_aud)), "fonte": "djen"}
             chegou("instrucao" if tipo == "instrução" else "conhecimento", d)
 
     # ── agenda do CRM ───────────────────────────────────────────────────────
@@ -363,8 +382,10 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         elif tipo == "conciliação":
             chegou("conhecimento", min(q, hoje_dt))
         if q >= hoje_dt and agenda_futura is None:
-            agenda_futura = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(lancada), "data": _dia(q),
-                             "fonte": "agenda"}
+            # start_at é UTC; a audiência é na hora de Cuiabá (UTC-4, sem horário de verão).
+            local = q - timedelta(hours=4)
+            agenda_futura = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(lancada), "data": _dia(local),
+                             "hora": local.strftime("%H:%M"), "fonte": "agenda"}
 
     # ── classe atual (DataJud da instância mais recente, senão DJEN) ─────────
     inst_recente = max(instancias, key=lambda i: i.get("dataHoraUltimaAtualizacao") or "", default=None)
@@ -538,7 +559,9 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         "ultima_intimacao": djen_recente.get("data") if djen_recente else None,
         "ultima_atividade": _dia(ultima_atividade),
         "ultimo_substantivo": _dia(ultimo_substantivo),
-        "audiencia": audiencia,
+        # Tipo sempre no mesmo vocabulário: o DataJud manda "de Conciliação" e a
+        # ficha escrevia "Audiência de de Conciliação".
+        "audiencia": {**audiencia, "tipo": _tipo_audiencia(_norm(audiencia["tipo"]))} if audiencia else None,
         "pendencias": pend,
         "marcos": [{**m, "quando": _dia(m["quando"])} for m in marcos],
         "total_movimentos": len(movs),

@@ -158,18 +158,25 @@ class CRM:
         for p in self._tudo("processes", "id,practice_area,notes"):
             out[p["id"]] = {"area": p.get("practice_area"), "notas": p.get("notes"), "intimacoes": [], "prazos": []}
         for i in self._tudo("djen_comunicacoes",
-                            "id,process_id,data_disponibilizacao,tipo_documento,texto,"
-                            "intimation_ai_analysis(summary,deadline_days)", {"process_id": "not.is.null"}):
+                            "id,process_id,data_disponibilizacao,tipo_documento,texto,created_at,"
+                            "intimation_ai_analysis(summary,deadline_days,deadline_due_date,urgency)",
+                            {"process_id": "not.is.null"}):
             if i["process_id"] in out:
                 a = i.get("intimation_ai_analysis") or {}
                 a = a[0] if isinstance(a, list) and a else (a if isinstance(a, dict) else {})
                 out[i["process_id"]]["intimacoes"].append({
                     "id": i["id"], "data": i.get("data_disponibilizacao"), "tipo": i.get("tipo_documento"),
-                    "texto": i.get("texto"), "resumo": a.get("summary"), "prazo_dias": a.get("deadline_days")})
-        for d in self._tudo("deadlines", "process_id,title,due_date,status",
-                            {"process_id": "not.is.null", "deleted_at": "is.null", "status": "neq.cancelado"}):
-            if d["process_id"] in out:
+                    "texto": i.get("texto"), "resumo": a.get("summary"), "prazo_dias": a.get("deadline_days"),
+                    "vencimento": a.get("deadline_due_date"), "urgencia": a.get("urgency"),
+                    "chegou_em": i.get("created_at")})
+        # Prazo sem processo, só com o cliente: 323 assim em 26/09/2026. Vai para
+        # a chave "cliente:<id>" — o alerta de cadastro conta com ele.
+        for d in self._tudo("deadlines", "process_id,client_id,title,description,due_date,status,created_at,intimation_id",
+                            {"deleted_at": "is.null", "status": "neq.cancelado"}):
+            if d.get("process_id") in out:
                 out[d["process_id"]]["prazos"].append(d)
+            elif not d.get("process_id") and d.get("client_id"):
+                out.setdefault(f"cliente:{d['client_id']}", {"prazos": []})["prazos"].append(d)
         return out
 
     def processos(self) -> list[ProcessoCRM]:

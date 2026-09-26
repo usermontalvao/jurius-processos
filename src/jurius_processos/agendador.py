@@ -103,6 +103,8 @@ def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list
     # Depois da IA das intimações: o resumo usa as análises que ela acabou de gravar.
     if getattr(cfg, "alimentar_ficha", False):
         entregas.append(("alimentar_ficha", lambda: alimentar.ficha(banco, cfg, procs, aplicar, somente=alvo)))
+        # Mesmo interruptor da ficha: é leitura do mesmo material, e sem ela não há a quem avisar.
+        entregas.append(("alimentar_alertas", lambda: alimentar.alertas(banco, cfg, procs, aplicar, somente=alvo)))
     res = {}
     for nome, fazer in entregas:
         _etapa(f"Alimentando o CRM: {nome.replace('alimentar_', '').replace('_', ' ')}")

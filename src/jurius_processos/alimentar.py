@@ -471,8 +471,10 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
         analise, vinc = json.loads(r["analise"]), json.loads(r["vinculo"] or "{}")
         instancias = json.loads(r["datajud"] or "[]")
         orgaos = [(i.get("orgaoJulgador") or {}).get("nome") for i in instancias]
-        orgaos += [c["orgao"] for c in banco.comunicacoes(proc.numero) if c["orgao"]]
-        f = ficha_mod.montar(analise, vinc, hoje, orgaos)
+        comunicacoes = banco.comunicacoes(proc.numero)
+        orgaos += [c["orgao"] for c in comunicacoes if c["orgao"]]
+        textos = [c["texto"] for c in comunicacoes] + [i.get("texto") for i in (dados.get(proc.id) or {}).get("intimacoes") or []]
+        f = ficha_mod.montar(analise, vinc, hoje, orgaos, textos)
         d = dados.get(proc.id, {})
         movs = [m for i in instancias for m in i.get("movimentos") or []]
         e = ficha_mod.entradas({"codigo": proc.codigo, "area": d.get("area"), "cliente": nomes.get(proc.client_id)},
@@ -514,4 +516,63 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
             "resumo": texto, "resumo_gerado_em": _agora(), "resumo_assinatura": ass,
             "resumo_modelo": f"deepseek/{cfg.deepseek_modelo}"}).raise_for_status()
         resumo["resumos_feitos"] += 1
+    return resumo
+
+
+# ── 5. ALERTAS DE CADASTRO (process_alerts) ─────────────────────────────────
+def alertas(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[str] | None = None,
+            agora: datetime | None = None, crm=None) -> dict:
+    """Prazo/audiência achado numa intimação e não cadastrado em 24 h.
+
+    Abre o que é novo, atualiza o aberto, resolve sozinho o que foi cadastrado,
+    reabre o resolvido que voltou a faltar — e NUNCA reabre o ignorado (a chave
+    única é por intimação/audiência)."""
+    from . import alertas as regras
+    from .crm import CRM
+    agora = agora or datetime.now(timezone.utc)
+    crm = crm or CRM(cfg.supabase_url, cfg.supabase_key)
+    dados, agenda = crm.para_a_ficha(), crm.agenda(crm_processos)
+    nomes = {c.id: c.nome for c in crm.clientes()}
+    http = _cliente(cfg)
+
+    achados: dict[str, dict] = {}
+    for proc in crm_processos:
+        if not proc.numero or (somente is not None and proc.numero not in somente):
+            continue
+        r = banco.processo(proc.numero)
+        analise = json.loads(r["analise"]) if r and r["analise"] else {}
+        if analise.get("situacao") == "arquivado":
+            continue
+        d = dados.get(proc.id) or {}
+        for a in regras.detectar({"id": proc.id, "client_id": proc.client_id, "codigo": proc.codigo,
+                                  "cliente": nomes.get(proc.client_id)},
+                                 d.get("intimacoes") or [],
+                                 (d.get("prazos") or []) + (dados.get(f"cliente:{proc.client_id}") or {}).get("prazos", []),
+                                 agenda.get(proc.id) or [], analise.get("audiencia"), agora):
+            achados[a["chave"]] = a
+
+    filtro = {} if somente is None else {"process_id": f"in.({','.join(p.id for p in crm_processos if p.numero in somente) or '00000000-0000-0000-0000-000000000000'})"}
+    guardados = {g["chave"]: g for g in _tudo(http, "process_alerts", "id,chave,situacao,process_id", filtro)}
+    novos = [a for k, a in achados.items() if k not in guardados]
+    atualizar = [a for k, a in achados.items() if k in guardados and guardados[k]["situacao"] in ("aberto", "resolvido")]
+    resolver = [g for k, g in guardados.items() if g["situacao"] == "aberto" and k not in achados]
+    resumo = {"abertos_agora": len(achados), "novos": len(novos), "atualizados": len(atualizar),
+              "resolvidos": len(resolver), "aplicado": aplicar}
+    if not aplicar:
+        return resumo
+    carimbo = agora.isoformat()
+    if novos:
+        http.post("/process_alerts", params={"on_conflict": "chave"},
+                  headers={"Prefer": "resolution=ignore-duplicates,return=minimal"},
+                  json=[{**a, "situacao": "aberto", "detectado_em": carimbo, "atualizado_em": carimbo}
+                        for a in novos]).raise_for_status()
+    for a in atualizar:
+        g = guardados[a["chave"]]
+        http.patch("/process_alerts", params={"id": f"eq.{g['id']}", "situacao": "in.(aberto,resolvido)"}, json={
+            "titulo": a["titulo"], "descricao": a["descricao"], "data": a["data"], "hora": a["hora"],
+            "dados": a["dados"], "situacao": "aberto", "resolvido_em": None, "atualizado_em": carimbo,
+        }).raise_for_status()
+    for g in resolver:
+        http.patch("/process_alerts", params={"id": f"eq.{g['id']}", "situacao": "eq.aberto"},
+                   json={"situacao": "resolvido", "resolvido_em": carimbo, "atualizado_em": carimbo}).raise_for_status()
     return resumo

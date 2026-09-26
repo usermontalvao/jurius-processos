@@ -83,17 +83,84 @@ def comarca_das_instancias(orgaos: list[str | None]) -> str | None:
     return None
 
 
-def montar(analise: dict, vinculo: dict, hoje: date, orgaos: list[str | None] | None = None) -> dict:
+_ROTULO_A = r"POLO ATIVO|AUTORA?|REQUERENTE|RECLAMANTE|EXEQUENTE"
+_ROTULO_P = r"POLO PASSIVO|R[ÉE]U|REQUERID[OA]|RECLAMAD[OA]|EXECUTAD[OA]"
+# Nome = sequência de palavras em MAIÚSCULAS; para na 1ª palavra com minúscula
+# ("Endereço", "Vistos") ou num número de item ("1.").
+_ROTULOS = r"(?:POLO|AUTORA?|R[ÉE]U|REQUERID[OA]|REQUERENTE|RECLAMAD[OA]|RECLAMANTE|EXEQUENTE|EXECUTAD[OA])\b"
+_NOME = (r"((?:(?!\d+[.)]?\s)(?!" + _ROTULOS + r")(?:-|[A-ZÀ-Ý0-9][A-ZÀ-Ý0-9&./,'ºª-]*)(?=[\s,;]|$)\s?){1,14})")
+_PADROES = [
+    ("A", re.compile(rf"\b(?:{_ROTULO_A})\s*:\s*(?:Nome:\s*)?{_NOME}")),
+    ("P", re.compile(rf"\b(?:{_ROTULO_P})\s*:\s*(?:Nome:\s*)?{_NOME}")),
+    ("A", re.compile(rf"\bajuizad[ao] por\s+{_NOME}")),
+    ("P", re.compile(rf"\bem face d[aoe]s?\s+{_NOME}")),
+]
+_NAO_E_NOME = {"NOME", "ENDEREÇO", "CPF", "CNPJ", "ADVOGADO", "ADVOGADOS", "ADVOGADA", "OAB", "POLO", "ATIVO", "PASSIVO",
+               "PARTE", "A PARTE", "OUTROS", "OUTRO"}
+
+
+# Lixo que aparece colado ou no lugar do nome (auditoria de 26/09/2026): o
+# título do documento seguinte ("INSS ATO ORDINATÓRIO"), o "USUÁRIO DO SISTEMA"
+# do PJe federal, "REPRESENTANTES" e o advogado com OAB ("NOME - MT30021-A").
+_SUFIXO_DOCUMENTO = re.compile(r"\s+(?:ATO ORDINAT[ÓO]RIO|SENTEN[ÇC]A(?: TIPO(?: [A-Z])?)?|DESPACHO|DECIS[ÃA]O|"
+                               r"INTIMA[ÇC][ÃA]O|CERTID[ÃA]O|EDITAL|AC[ÓO]RD[ÃA]O)\s*$")
+_NAO_E_PARTE = re.compile(r"USU[ÁA]RIO DO SISTEMA|\bREPRESENTANTES?\b|\b[A-Z]{2}\s?\d{3,}", re.IGNORECASE)
+
+
+def limpar_partes(nomes: list[str]) -> list[str]:
+    out: list[str] = []
+    for n in nomes:
+        n = _SUFIXO_DOCUMENTO.sub("", (n or "").strip()).strip(" ,;-/")
+        if not n or _NAO_E_PARTE.search(n):
+            continue
+        chave = re.sub(r"[^A-Z0-9]", "", n.upper())
+        if any(re.sub(r"[^A-Z0-9]", "", x.upper()).startswith(chave) or chave.startswith(re.sub(r"[^A-Z0-9]", "", x.upper()))
+               for x in out):
+            continue
+        out.append(n)
+    return out
+
+
+def partes_do_texto(textos: list[str | None]) -> dict[str, list[str]]:
+    """Partes lidas no TEXTO das intimações — quando os destinatários do DJEN
+    só trazem o nosso cliente (caso 1051311-22.2026.8.11.0001, 26/09/2026:
+    "POLO PASSIVO: Nome: ..." e "ajuizada por X em face de NU PAGAMENTOS S/A")."""
+    out: dict[str, list[str]] = {"A": [], "P": []}
+    for texto in textos:
+        t = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", texto or ""))
+        for polo, rx in _PADROES:
+            for m in rx.finditer(t):
+                nome = m.group(1).strip(" ,;-/")
+                nome = re.sub(r"\s+(?:E|CPF|CNPJ|ENDERE[ÇC]O|NOME|ADVOGAD[OA]S?)$", "", nome).strip(" ,;-/")
+                if len(nome) < 4 or nome in _NAO_E_NOME or sum(ch.isalpha() for ch in nome) < 4:
+                    continue
+                # "NU PAGAMENTOS S.A. - INSTITUICAO..." e "NU PAGAMENTOS S/A" são a mesma parte.
+                chave = re.sub(r"[^A-Z0-9]", "", nome)
+                ja = [re.sub(r"[^A-Z0-9]", "", n) for n in out[polo]]
+                if any(k.startswith(chave) or chave.startswith(k) for k in ja) or len(out[polo]) >= 3:
+                    continue
+                out[polo].append(nome)
+    return out
+
+
+def montar(analise: dict, vinculo: dict, hoje: date, orgaos: list[str | None] | None = None,
+           textos: list[str | None] | None = None) -> dict:
     """As colunas de process_insights que não dependem de IA. orgaos: os das
     outras instâncias e do DJEN, para achar a comarca quando o atual é de 2º grau."""
-    partes = (vinculo or {}).get("partes") or {}
+    partes = dict((vinculo or {}).get("partes") or {})
+    # Polo vazio nos destinatários do DJEN: o nome costuma estar no texto.
+    if textos and not (partes.get("A") and partes.get("P")):
+        lidas = partes_do_texto(textos)
+        for polo in ("A", "P"):
+            if not partes.get(polo):
+                partes[polo] = lidas[polo]
     aud = analise.get("audiencia")
     if aud and aud.get("data") and aud["data"] < hoje.isoformat():
         aud = None  # a ficha mostra a PRÓXIMA; a que passou está no histórico
     orgao = analise.get("orgao")
     return {
-        "polo_ativo": ", ".join(partes.get("A") or []) or None,
-        "polo_passivo": ", ".join(partes.get("P") or []) or None,
+        "polo_ativo": ", ".join(limpar_partes(partes.get("A") or [])) or None,
+        "polo_passivo": ", ".join(limpar_partes(partes.get("P") or [])) or None,
         "orgao": orgao,
         "comarca": comarca_das_instancias([orgao, *(orgaos or [])]),
         "tribunal": analise.get("tribunal"),
