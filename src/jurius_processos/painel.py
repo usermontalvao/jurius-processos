@@ -43,6 +43,7 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "execucoes": execs,
         "ocupado": ocupado,
         "carga_feita": banco.carga_feita(),
+        "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         "ultimo_erro": next((e["resumo"].get("erro") for e in execs
                              if not e["ok"] and e["fim"] and isinstance(e["resumo"], dict) and e["resumo"].get("erro")), None),
     }
@@ -95,6 +96,9 @@ async function carregar(){
   const av=[];
   if(!d.carga_feita) av.push('Primeira carga em andamento: o histórico desde 2023 é buscado antes de publicar qualquer coisa no CRM (≈30 min).');
   if(d.ultimo_erro) av.push('Última falha: '+esc(d.ultimo_erro));
+  const ag=d.agendador||{};
+  if(ag.ultima_falha) av.push('Agendador falhou em '+hora(ag.ultima_falha_em)+': '+esc(ag.ultima_falha)+' — nova tentativa às '+hora(ag.proximo));
+  if(!ag.iniciado_em) av.push('O agendador não está rodando.');
   document.getElementById('aviso').innerHTML=av.map(t=>'<div class="card" style="margin-bottom:12px;border-color:var(--acc)">'+t+'</div>').join('');
   document.getElementById('estado').textContent=d.ocupado?'Trabalhando agora…':'Parado · atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;

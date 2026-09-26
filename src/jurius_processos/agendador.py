@@ -26,6 +26,12 @@ INTERVALO_H = 2
 # Ciclo que falhou tenta de novo bem antes das 2 h: no 1º boot do servidor a
 # carga morreu no meio e ficaria parada até o próximo intervalo.
 REPETIR_APOS_FALHA_MIN = 10
+
+# O que o painel mostra sobre o agendador. Falha ANTES de abrir uma execução
+# (ex.: o Supabase recusou a leitura dos clientes) não deixava rastro nenhum na
+# tabela de execuções — só no log do contêiner, que ninguém vê do navegador.
+ESTADO: dict = {"iniciado_em": None, "proximo": None, "ultima_falha": None, "ultima_falha_em": None,
+                "ultimo_ok_em": None}
 JANELA = range(6, 23)
 
 
@@ -67,7 +73,9 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
 
 def _laco(cfg: Config, banco: Banco, trava: threading.Lock):
     proximo = datetime.now(FUSO)
+    ESTADO["iniciado_em"] = proximo.isoformat(timespec="seconds")
     while True:
+        ESTADO["proximo"] = proximo.isoformat(timespec="seconds")
         agora = datetime.now(FUSO)
         # A carga inicial roda a qualquer hora; o ciclo normal, só na janela.
         if agora >= proximo and (agora.hour in JANELA or not banco.carga_feita()):
@@ -75,9 +83,12 @@ def _laco(cfg: Config, banco: Banco, trava: threading.Lock):
                 try:
                     log.info("ciclo: %s", ciclo(cfg, banco))
                     proximo = agora + timedelta(hours=INTERVALO_H)
-                except Exception:  # noqa: BLE001 — o laço não pode morrer
+                    ESTADO["ultimo_ok_em"] = datetime.now(FUSO).isoformat(timespec="seconds")
+                except Exception as e:  # noqa: BLE001 — o laço não pode morrer
                     log.exception("ciclo falhou; nova tentativa em %s min", REPETIR_APOS_FALHA_MIN)
                     proximo = agora + timedelta(minutes=REPETIR_APOS_FALHA_MIN)
+                    ESTADO["ultima_falha"] = f"{type(e).__name__}: {e}"[:500]
+                    ESTADO["ultima_falha_em"] = datetime.now(FUSO).isoformat(timespec="seconds")
         time.sleep(30)
 
 
