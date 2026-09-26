@@ -1,4 +1,4 @@
-# GERADO por deploy/gerar-stack.py (commit 0c0b5ee). Não edite à mão.
+# GERADO por deploy/gerar-stack.py (commit e59c57a). Não edite à mão.
 #
 # Portainer → Stacks → Add stack → colar este arquivo. Em "Environment variables":
 #   SUPABASE_URL                 https://<projeto>.supabase.co
@@ -28,7 +28,7 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: /app/src
       FONTES_B64: |
-        H4sIAB7/t2oC/+y9XXMbR5Yg2s/4FTnl1VXBBosA+A0Z0tASbVMjiWqS8vQ0zQsVUQWyJAAFVxUg
+        H4sIAGj/t2oC/+y9XXMbR5Yg2s/4FTnl1VXBBosA+A0Z0tASbVMjiWqS8vQ0zQsVUQWyJAAFVxUg
         UWxMzMZGTMRuxH2Z2YiNmKf2zkNHd0Q/9exLPw7/Sf+Sez4yszKrCiQlu7U9Y9IWCVTl58mTJ885
         eT68ZW/5r5/7b78O/SBMfvZn+Wnyz6K/zeZKO/+Mz1vNdqv5M/H2Zx/hZ5pmfgLd/+yn+dNeF6Ms
         GoXd1sZWs725tbXV9NZWtrbatZ/d/vwEftKkv/xqmkTTtDdJ4n6YpnG63OtF4yjr9bzJ+Y+1/9dX
