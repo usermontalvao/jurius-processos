@@ -1,0 +1,22 @@
+# Sobe o cérebro e o túnel do Cloudflare. Nenhuma porta aberta no servidor:
+# o cloudflared sai para a Cloudflare e o tráfego chega por dentro do túnel.
+services:
+  cerebro:
+    image: ghcr.io/${GITHUB_OWNER:-usermontalvao}/jurius-processos:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./dados:/app/dados
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/saude')"]
+      interval: 60s
+      timeout: 10s
+
+  tunel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - cerebro

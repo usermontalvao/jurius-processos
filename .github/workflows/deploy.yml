@@ -1,0 +1,46 @@
+# push na main → testes → imagem no GHCR → servidor puxa e reinicia.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install httpx fastapi uvicorn pytest
+      - run: pytest -q
+
+  imagem:
+    needs: testes
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/jurius-processos:latest
+
+  servidor:
+    needs: imagem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVIDOR_HOST }}
+          username: ${{ secrets.SERVIDOR_USUARIO }}
+          key: ${{ secrets.SERVIDOR_CHAVE_SSH }}
+          script: |
+            cd /opt/jurius-processos
+            docker compose pull cerebro
+            docker compose up -d

@@ -1,0 +1,13 @@
+[project]
+name = "jurius-processos"
+version = "0.1.0"
+description = "Cérebro do acervo processual: descobre no DJEN, enriquece no DataJud, analisa a fase e vincula ao CRM."
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.27", "fastapi>=0.115", "uvicorn>=0.30"]
+
+[project.optional-dependencies]
+teste = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
