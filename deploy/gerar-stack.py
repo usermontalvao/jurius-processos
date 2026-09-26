@@ -24,6 +24,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
 SAIDA = RAIZ / "deploy" / "docker-compose.portainer.yml"
+SAIDA_BRIDGE = RAIZ / "deploy" / "docker-compose.portainer-bridge.yml"
 PORTA = 8792
 
 
@@ -42,10 +43,20 @@ def versao() -> str:
         return "sem-git"
 
 
-def main():
+def gerar(bridge: bool) -> str:
+    """bridge=False: rede do host (servidor com a bridge quebrada, o padrão).
+    bridge=True: rede padrão do Docker, porta publicada só em 127.0.0.1."""
     b64 = pacote()
     # Linhas de 76 colunas: o editor do Portainer não gosta de linha gigante.
     linhas = "\n".join("        " + b64[i:i + 76] for i in range(0, len(b64), 76))
+    if bridge:
+        # Dentro do contêiner escuta em 0.0.0.0; no servidor a porta só abre em
+        # 127.0.0.1 — o túnel chega por localhost e a internet não enxerga.
+        rede = f'    ports:\n      - "127.0.0.1:{PORTA}:{PORTA}"'
+        host_interno = "0.0.0.0"
+    else:
+        rede = "    network_mode: host"
+        host_interno = "127.0.0.1"
     compose = f"""# GERADO por deploy/gerar-stack.py (commit {versao()}). Não edite à mão.
 #
 # Portainer → Stacks → Add stack → colar este arquivo. Em "Environment variables":
@@ -62,7 +73,7 @@ services:
     image: python:3.12-slim
     container_name: jurius-processos
     restart: unless-stopped
-    network_mode: host
+{rede}
     environment:
       SUPABASE_URL: ${{SUPABASE_URL}}
       SUPABASE_SERVICE_ROLE_KEY: ${{SUPABASE_SERVICE_ROLE_KEY}}
@@ -92,7 +103,7 @@ services:
           echo "A porta {PORTA} já está em uso neste servidor. Pare o outro serviço ou troque a porta." >&2
           exit 1
         fi
-        exec uvicorn jurius_processos.api:app --host 127.0.0.1 --port {PORTA}
+        exec uvicorn jurius_processos.api:app --host {host_interno} --port {PORTA}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{PORTA}/saude')"]
       interval: 60s
@@ -102,8 +113,14 @@ services:
 volumes:
   jurius_processos_dados:
 """
-    SAIDA.write_text(compose)
-    print(f"{SAIDA.relative_to(RAIZ)}: {len(compose)//1024} KB, código {len(b64)//1024} KB em base64")
+    return compose
+
+
+def main():
+    for bridge, saida in ((False, SAIDA), (True, SAIDA_BRIDGE)):
+        compose = gerar(bridge)
+        saida.write_text(compose)
+        print(f"{saida.relative_to(RAIZ)}: {len(compose)//1024} KB")
 
 
 if __name__ == "__main__":

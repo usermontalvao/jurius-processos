@@ -4,5 +4,6 @@
 .venv/
 __pycache__/
 dados/
+deploy/docker-compose.portainer-bridge.yml
 deploy/docker-compose.portainer.yml
 deploy/token.secret
