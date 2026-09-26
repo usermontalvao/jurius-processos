@@ -32,14 +32,35 @@ class Config:
     atualizar_status: bool
 
 
+def _limpo(nome: str, padrao: str = "") -> str:
+    """Valor de variável sem aspas nem espaço/quebra de linha nas pontas.
+
+    Colar a chave no Portainer com aspas ou com um espaço no fim fazia o
+    Supabase responder 401 sem pista nenhuma do porquê.
+    """
+    return (os.environ.get(nome) or padrao).strip().strip('"').strip("'").strip()
+
+
+def cabecalhos_supabase(chave: str) -> dict:
+    """Cabeçalhos de autenticação do PostgREST para a chave de serviço.
+
+    As chaves novas do painel do Supabase (`sb_secret_…`) NÃO são JWT: vão só
+    em `apikey`. Mandá-las também como `Authorization: Bearer` dá 401. A
+    service_role antiga (JWT, `eyJ…`) vai nos dois.
+    """
+    if chave.startswith("sb_"):
+        return {"apikey": chave}
+    return {"apikey": chave, "Authorization": f"Bearer {chave}"}
+
+
 def carregar() -> Config:
-    url = os.environ.get("SUPABASE_URL") or os.environ.get("VITE_SUPABASE_URL") or ""
+    url = _limpo("SUPABASE_URL") or _limpo("VITE_SUPABASE_URL")
     return Config(
         supabase_url=url.rstrip("/"),
-        supabase_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+        supabase_key=_limpo("SUPABASE_SERVICE_ROLE_KEY"),
         datajud_key=os.environ.get("DATAJUD_API_KEY") or _DATAJUD_CHAVE_PUBLICA,
         banco=Path(os.environ.get("JURIUS_BANCO", "dados/cerebro.sqlite3")),
-        token_api=os.environ.get("JURIUS_TOKEN_API", ""),
+        token_api=_limpo("JURIUS_TOKEN_API"),
         djen_inicio=os.environ.get("DJEN_INICIO", "2023-01-01"),
         publicar=os.environ.get("JURIUS_PUBLICAR", "0") == "1",
         cadastrar_auto=os.environ.get("JURIUS_CADASTRAR_AUTO", "0") == "1",

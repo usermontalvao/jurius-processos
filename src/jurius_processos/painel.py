@@ -13,6 +13,19 @@ from collections import Counter
 from .banco import Banco
 
 
+def _descreve_chave() -> str:
+    """Formato e tamanho da chave do Supabase que o serviço recebeu — nunca o valor.
+
+    Diagnostica o 401 mais comum: chave cortada ao colar no Portainer.
+    """
+    from .config import carregar
+    k = carregar().supabase_key
+    if not k:
+        return "ausente"
+    tipo = "service_role (JWT)" if k.startswith("eyJ") else ("secret nova (sb_secret_)" if k.startswith("sb_secret") else "formato desconhecido")
+    return f"{tipo}, {len(k)} caracteres"
+
+
 def dados(banco: Banco, ocupado: bool) -> dict:
     fases, vinculos, situacoes = Counter(), Counter(), Counter()
     fora = 0
@@ -44,6 +57,7 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "ocupado": ocupado,
         "carga_feita": banco.carga_feita(),
         "versao": __import__("os").environ.get("JURIUS_VERSAO", "local"),
+        "chave_supabase": _descreve_chave(),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         "ultimo_erro": next((e["resumo"].get("erro") for e in execs
                              if not e["ok"] and e["fim"] and isinstance(e["resumo"], dict) and e["resumo"].get("erro")), None),
@@ -116,7 +130,7 @@ async function carregar(){
   document.getElementById('luz').className='luz '+cor;
   document.getElementById('ind-t').textContent=t;
   document.getElementById('ind-d').innerHTML=det;
-  document.getElementById('versao').textContent='versão '+(d.versao||'?');
+  document.getElementById('versao').textContent='versão '+(d.versao||'?')+' · chave do Supabase: '+(d.chave_supabase||'?');
   document.getElementById('estado').textContent='atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;
 }

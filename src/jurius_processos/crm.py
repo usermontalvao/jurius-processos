@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from . import cnj
+from .config import cabecalhos_supabase
 from .djen import Advogado
 
 
@@ -34,7 +35,7 @@ class CRM:
         self.http = httpx.Client(
             base_url=f"{url}/rest/v1",
             timeout=60,
-            headers={"apikey": chave, "Authorization": f"Bearer {chave}"},
+            headers=cabecalhos_supabase(chave),
         )
 
     def _tudo(self, tabela: str, select: str, filtros: dict | None = None) -> list[dict]:

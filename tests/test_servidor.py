@@ -56,3 +56,17 @@ def test_carga_feita(tmp_path):
     i = b.abrir_execucao("carga_completa")
     b.fechar_execucao(i, True, {})
     assert b.carga_feita()
+
+
+def test_chave_com_aspas_e_espaco_e_limpa(monkeypatch):
+    from jurius_processos.config import carregar
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", '  "eyJabc.def.ghi"\n')
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co/ ")
+    c = carregar()
+    assert c.supabase_key == "eyJabc.def.ghi" and c.supabase_url == "https://x.supabase.co"
+
+
+def test_chave_nova_sb_secret_vai_so_no_apikey():
+    from jurius_processos.config import cabecalhos_supabase
+    assert cabecalhos_supabase("sb_secret_abc") == {"apikey": "sb_secret_abc"}
+    assert cabecalhos_supabase("eyJx")["Authorization"] == "Bearer eyJx"

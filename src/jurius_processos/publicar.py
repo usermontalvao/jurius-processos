@@ -22,6 +22,7 @@ import httpx
 
 from . import cnj
 from .banco import Banco
+from .config import cabecalhos_supabase
 
 
 def _linha_acervo(p: dict) -> dict:
@@ -112,7 +113,7 @@ def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = 
         return resumo
 
     http = httpx.Client(base_url=f"{url}/rest/v1", timeout=60,
-                        headers={"apikey": chave, "Authorization": f"Bearer {chave}", "Content-Type": "application/json"})
+                        headers={**cabecalhos_supabase(chave), "Content-Type": "application/json"})
 
     # 2 antes de 1: o processo novo precisa existir para o acervo apontar para ele.
     for p in plano["cadastrar"]:
