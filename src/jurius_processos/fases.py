@@ -66,6 +66,10 @@ _INICIO_CUMPRIMENTO = re.compile(
     # Liquidação é o começo do cumprimento (Gabriel 0000284-09: "elaboração de
     # cálculos de liquidação" com o DataJud parado em junho).
     r"|c[áa]lculos\s+de\s+liquida|liquida[çc][ãa]o\s+de\s+senten|fase\s+de\s+liquida")
+# "Sentença líquida" do TRT (Recomendação 4/2018 da CGJT): o perito faz a
+# conta ANTES da sentença — "cujos cálculos... farão parte da sentença".
+# Não é cumprimento (Gabriel 0000284-09, 26/09/2026: aguarda sentença).
+_SENTENCA_LIQUIDA = re.compile(r"senten[çc]a\s+l[íi]quida|far[ãa]o\s+parte\s+da\s+senten|recomenda[çc][ãa]o\s+4/2018")
 _CIENCIA_SENTENCA = re.compile(r"ci[êe]ncia\s+d[ao]\s+senten[çc]a")
 _ALVARA_TEXTO = re.compile(r"expedi[çc][ãa]o\s+d[oe]\s+alvar[áa]|alvar[áa]\s+eletr[ôo]nico|requisi[çc][ãa]o\s+de\s+pequeno\s+valor"
                            r"|expe[çc]o\s+(o\s+)?(competente\s+)?alvar[áa]|alvar[áa]\s+finalizado")
@@ -339,7 +343,7 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             cumprimento_inicio = cumprimento_inicio or d
             chegou("cumprimento_sentenca", d)
             marcos.append({"quando": d, "marco": "extincao_execucao", "nome": "Execução extinta (DJEN)", "grau": None})
-        elif _INICIO_CUMPRIMENTO.search(t):
+        elif _INICIO_CUMPRIMENTO.search(t) and not _SENTENCA_LIQUIDA.search(t):
             cumprimento_inicio = cumprimento_inicio or d
             chegou("cumprimento_sentenca", d)
             marcos.append({"quando": d, "marco": "cumprimento", "nome": "Cumprimento de sentença (DJEN)", "grau": None})

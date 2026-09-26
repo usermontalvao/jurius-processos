@@ -400,3 +400,12 @@ def test_calculos_de_liquidacao_no_djen_e_cumprimento():
     datajud = [inst("G1", [mov(26, "2026-03-01")])]
     coms = [{"data": "2026-09-24", "texto": "Considerando o trânsito, determino a elaboração de cálculos de liquidação por perito contábil"}]
     assert analisar("n", datajud, coms, HOJE)["status_crm"] == "cumprimento"
+
+
+def test_sentenca_liquida_do_trt_nao_e_cumprimento():
+    # Texto real (0000284-09, 24/09/2026): os cálculos vêm ANTES da sentença.
+    datajud = [inst("G1", [mov(26, "2026-03-01")])]
+    coms = [{"data": "2026-09-24", "texto": "Considerando que a sentença será líquida, mantendo o conteúdo em sigilo, "
+             "nos termos do artigo 5º da Recomendação 4/2018 da CGJT. 2. Nomeio o perito contábil para elaboração da "
+             "conta de liquidação, cujos cálculos de liquidação, após analisados, farão parte da sentença."}]
+    assert analisar("n", datajud, coms, HOJE)["status_crm"] != "cumprimento"
