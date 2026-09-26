@@ -23,6 +23,9 @@ from .config import Config
 log = logging.getLogger(__name__)
 FUSO = ZoneInfo("America/Cuiaba")
 INTERVALO_H = 2
+# Ciclo que falhou tenta de novo bem antes das 2 h: no 1º boot do servidor a
+# carga morreu no meio e ficaria parada até o próximo intervalo.
+REPETIR_APOS_FALHA_MIN = 10
 JANELA = range(6, 23)
 
 
@@ -63,19 +66,22 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
 
 
 def _laco(cfg: Config, banco: Banco, trava: threading.Lock):
-    ultimo = None
+    proximo = datetime.now(FUSO)
     while True:
         agora = datetime.now(FUSO)
-        devido = ultimo is None or agora - ultimo >= timedelta(hours=INTERVALO_H)
-        if devido and agora.hour in JANELA:
+        # A carga inicial roda a qualquer hora; o ciclo normal, só na janela.
+        if agora >= proximo and (agora.hour in JANELA or not banco.carga_feita()):
             with trava:
                 try:
                     log.info("ciclo: %s", ciclo(cfg, banco))
+                    proximo = agora + timedelta(hours=INTERVALO_H)
                 except Exception:  # noqa: BLE001 — o laço não pode morrer
-                    log.exception("ciclo falhou")
-            ultimo = agora
-        time.sleep(60)
+                    log.exception("ciclo falhou; nova tentativa em %s min", REPETIR_APOS_FALHA_MIN)
+                    proximo = agora + timedelta(minutes=REPETIR_APOS_FALHA_MIN)
+        time.sleep(30)
 
 
 def iniciar(cfg: Config, banco: Banco, trava: threading.Lock):
+    if n := banco.fechar_interrompidas():
+        log.warning("%d execução(ões) interrompida(s) numa subida anterior foram fechadas como falha", n)
     threading.Thread(target=_laco, args=(cfg, banco, trava), daemon=True, name="agendador").start()

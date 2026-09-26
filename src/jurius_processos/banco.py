@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,14 +69,33 @@ def agora() -> str:
 
 
 class Banco:
+    """Uma conexão SQLite POR THREAD.
+
+    O agendador escreve numa thread e as páginas (painel, /saude — que o
+    healthcheck do Docker chama a cada minuto) leem em outras. Com uma conexão
+    só, compartilhada, as leituras voltavam None no meio da escrita e a carga
+    inicial morreu no 1º boot no servidor (26/09/2026). Em WAL, cada thread com
+    a sua conexão lê em paralelo com o escritor; `busy_timeout` espera a vez
+    em vez de falhar quando duas escritas se encontram.
+    """
+
     def __init__(self, caminho: Path | str):
-        caminho = Path(caminho)
-        if str(caminho) != ":memory:":
-            caminho.parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(caminho, check_same_thread=False, isolation_level=None)
-        self.con.row_factory = sqlite3.Row
+        self.caminho = Path(caminho)
+        if str(self.caminho) != ":memory:":
+            self.caminho.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
         self.con.execute("pragma journal_mode=wal")
         self.con.executescript(ESQUEMA)
+
+    @property
+    def con(self) -> sqlite3.Connection:
+        c = getattr(self._local, "con", None)
+        if c is None:
+            c = sqlite3.connect(self.caminho, isolation_level=None, timeout=60)
+            c.row_factory = sqlite3.Row
+            c.execute("pragma busy_timeout=60000")
+            self._local.con = c
+        return c
 
     # ── comunicações ────────────────────────────────────────────────────────
     def gravar_comunicacao(self, item: dict, numero: str, motivo: str) -> bool:
@@ -136,6 +156,16 @@ class Banco:
             "insert into eventos (em, numero, tipo, detalhe) values (?,?,?,?)",
             (agora(), numero, tipo, json.dumps(detalhe or {}, ensure_ascii=False)),
         )
+
+    def fechar_interrompidas(self) -> int:
+        """Execuções sem fim são de um processo que morreu (reinício, erro fatal).
+
+        Sem isto o painel mostrava "em curso" para sempre uma carga que já não
+        existia. Chamado ao subir, antes do agendador.
+        """
+        return self.con.execute(
+            "update execucoes set fim=?, ok=0, resumo=json_object('erro', 'interrompida: o serviço parou no meio') "
+            "where fim is null", (agora(),)).rowcount
 
     def carga_feita(self) -> bool:
         """A carga completa (histórico desde DJEN_INICIO) já rodou com sucesso?
