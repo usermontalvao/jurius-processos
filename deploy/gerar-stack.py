@@ -10,8 +10,8 @@ stack usa `network_mode: host` e o serviço fica preso a 127.0.0.1 — quem o
 publica é o Cloudflare Tunnel que já roda no servidor. Com rede de host,
 0.0.0.0 exporia a API direto na internet.
 
-Segredos NÃO vão no arquivo: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e
-JURIUS_TOKEN_API são variáveis de ambiente da stack no Portainer.
+Segredos NÃO vão no arquivo: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+JURIUS_TOKEN_API e DEEPSEEK_API_KEY são variáveis de ambiente da stack no Portainer.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ def gerar(bridge: bool) -> str:
 #   SUPABASE_URL                 https://<projeto>.supabase.co
 #   SUPABASE_SERVICE_ROLE_KEY    chave service_role do Supabase do CRM
 #   JURIUS_TOKEN_API             qualquer segredo longo (rodar ciclo de fora, API)
+#   DEEPSEEK_API_KEY             chave da DeepSeek (resumo das intimações)
 # Cloudflare Zero Trust → Tunnels → o túnel do servidor → Public hostname:
 #   processos.jurius-api.com  →  http://localhost:{PORTA}
 #
@@ -80,6 +81,11 @@ services:
       JURIUS_TOKEN_API: ${{JURIUS_TOKEN_API}}
       JURIUS_PUBLICAR: "1"
       JURIUS_ATUALIZAR_STATUS: "1"
+      JURIUS_ALIMENTAR_INTIMACOES: "1"
+      JURIUS_ALIMENTAR_DATAJUD: "1"
+      JURIUS_ALIMENTAR_IA: "1"
+      DEEPSEEK_API_KEY: ${{DEEPSEEK_API_KEY}}
+      DEEPSEEK_MODELO: "deepseek-flash"
       JURIUS_CADASTRAR_AUTO: "0"
       JURIUS_VERSAO: "{versao()}"
       JURIUS_BANCO: /dados/cerebro.sqlite3

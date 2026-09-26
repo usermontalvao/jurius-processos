@@ -26,6 +26,52 @@ def _descreve_chave() -> str:
     return f"{tipo}, {len(k)} caracteres"
 
 
+_CHAVE_IA: dict = {"ate": 0.0, "estado": None}
+CHAVE_IA_VALIDADE_S = 600  # a página se atualiza sozinha; a DeepSeek não precisa ouvir isso
+
+
+def estado_chave_deepseek(chave: str, consultar=None) -> dict:
+    """A chave da IA funciona? Pergunta o saldo à DeepSeek (não gasta crédito).
+
+    Nunca devolve a chave nem o valor do saldo — a página é pública.
+    estado: ok | sem_saldo | invalida | ausente | nao_verificada
+    """
+    if not chave:
+        return {"estado": "ausente", "texto": "ausente — falta DEEPSEEK_API_KEY na stack"}
+    import httpx
+    try:
+        r = (consultar or httpx.get)("https://api.deepseek.com/user/balance", timeout=10,
+                                     headers={"Authorization": f"Bearer {chave}", "Accept": "application/json"})
+    except Exception as e:  # noqa: BLE001
+        return {"estado": "nao_verificada", "texto": f"não verificada (sem resposta da DeepSeek: {type(e).__name__})"}
+    if r.status_code == 401:
+        return {"estado": "invalida", "texto": "inválida ou revogada (401) — cole uma chave nova na stack"}
+    if r.status_code == 402:
+        return {"estado": "sem_saldo", "texto": "sem saldo (402) — recarregue a conta DeepSeek"}
+    if r.status_code != 200:
+        return {"estado": "nao_verificada", "texto": f"não verificada (DeepSeek respondeu {r.status_code})"}
+    try:
+        disponivel = bool(r.json().get("is_available"))
+    except ValueError:
+        return {"estado": "nao_verificada", "texto": "não verificada (resposta ilegível)"}
+    if not disponivel:
+        return {"estado": "sem_saldo", "texto": "sem saldo — recarregue a conta DeepSeek"}
+    return {"estado": "ok", "texto": "ok"}
+
+
+def _chave_ia() -> dict:
+    import time
+    from .config import carregar
+    agora = time.time()
+    if _CHAVE_IA["estado"] is None or agora >= _CHAVE_IA["ate"]:
+        k = carregar().deepseek_key
+        e = estado_chave_deepseek(k)
+        e["caracteres"] = len(k)
+        e["verificada_em"] = time.strftime("%H:%M", time.localtime(agora))
+        _CHAVE_IA.update(estado=e, ate=agora + CHAVE_IA_VALIDADE_S)
+    return _CHAVE_IA["estado"]
+
+
 def _o_que_alimenta() -> dict:
     from .config import carregar
     c = carregar()
@@ -66,6 +112,7 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "versao": __import__("os").environ.get("JURIUS_VERSAO", "local"),
         "chave_supabase": _descreve_chave(),
         "alimenta": _o_que_alimenta(),
+        "chave_ia": _chave_ia(),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         # Só a falha que ainda vale: se depois dela alguma etapa terminou bem,
         # o painel não assusta com erro antigo (a carga interrompida do 1º boot).
@@ -106,7 +153,8 @@ code{font-size:11px;color:var(--mut);word-break:break-word}
 <div class="sub">Descobre pelo DJEN (OAB e nome completo), enriquece no DataJud, analisa e publica no CRM. Ciclo automático a cada 2 h, das 06h às 22h (Cuiabá).</div></div>
 <div class="sp"></div><span id="estado" class="sub"></span><button id="rodar">Rodar ciclo agora</button></header>
 <div class="ind" id="ind"><span class="luz" id="luz"></span><div><b id="ind-t">Conectando…</b><div class="det" id="ind-d"></div></div><div class="sp"></div><span class="sub" id="versao"></span></div>
-<div class="sub" id="alimenta" style="margin:-4px 2px 12px"></div>
+<div class="sub" id="alimenta" style="margin:-4px 2px 4px"></div>
+<div class="sub" id="chave-ia" style="margin:0 2px 12px"></div>
 <div id="aviso"></div>
 <div class="grid" id="nums"></div>
 <div class="cols" id="dist"></div>
@@ -143,7 +191,12 @@ async function carregar(){
   document.getElementById('ind-d').innerHTML=det;
   const al=d.alimenta||{};
   const marca=(on,t)=>(on?'✓ ':'✗ ')+t;
-  document.getElementById('alimenta').textContent='Alimenta o CRM: '+[marca(al.intimacoes,'intimações'),marca(al.datajud,'DataJud'),marca(al.ia,'IA')+(al.ia_sem_chave?' (falta DEEPSEEK_API_KEY)':'')].join(' · ')+' — o que está ✗ continua com a rotina antiga do Supabase.';
+  document.getElementById('alimenta').textContent='Alimenta o CRM: '+[marca(al.intimacoes,'intimações'),marca(al.datajud,'DataJud'),marca(al.ia,'IA')+(al.ia_sem_chave?' (falta DEEPSEEK_API_KEY)':'')+(al.ia&&['sem_saldo','invalida'].includes((d.chave_ia||{}).estado)?' ⚠ ligada, mas a chave não funciona — nenhuma análise sai':'')].join(' · ')+' — o que está ✗ continua com a rotina antiga do Supabase.';
+  const ci=d.chave_ia||{};
+  const corCi={ok:'var(--ok)',sem_saldo:'var(--err)',invalida:'var(--err)',ausente:'var(--err)'}[ci.estado]||'var(--acc)';
+  const elCi=document.getElementById('chave-ia');
+  elCi.innerHTML='Chave da IA (DeepSeek): <b style="color:'+corCi+'">'+esc(ci.texto||'?')+'</b>'
+    +(ci.caracteres?' · '+ci.caracteres+' caracteres':'')+(ci.verificada_em?' · conferida às '+ci.verificada_em:'');
   document.getElementById('versao').textContent='versão '+(d.versao||'?')+' · chave do Supabase: '+(d.chave_supabase||'?');
   document.getElementById('estado').textContent='atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;
