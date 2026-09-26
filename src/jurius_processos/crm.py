@@ -139,7 +139,7 @@ class CRM:
             if p.client_id and (p.status or "") != "arquivado":
                 ativos.setdefault(p.client_id, []).append(p.id)
         out: dict[str, list[dict]] = {}
-        for e in self._tudo("calendar_events", "process_id,client_id,title,start_at,status",
+        for e in self._tudo("calendar_events", "process_id,client_id,title,start_at,status,created_at",
                             {"event_type": "eq.hearing"}):
             pid = e.get("process_id")
             if not pid:
@@ -147,7 +147,29 @@ class CRM:
                 pid = ids[0] if len(ids) == 1 else None
             if pid:
                 out.setdefault(pid, []).append({"quando": e.get("start_at"), "titulo": e.get("title") or "",
-                                                "status": e.get("status")})
+                                                "status": e.get("status"), "criado_em": e.get("created_at")})
+        return out
+
+    def para_a_ficha(self) -> dict[str, dict]:
+        """O que a ficha/resumo precisa do CRM, por processo, numa varredura só:
+        {process_id: {area, notas, intimacoes, prazos}}. Uma consulta por tabela
+        (e não por processo): o ciclo lê os ~200 processos de uma vez."""
+        out: dict[str, dict] = {}
+        for p in self._tudo("processes", "id,practice_area,notes"):
+            out[p["id"]] = {"area": p.get("practice_area"), "notas": p.get("notes"), "intimacoes": [], "prazos": []}
+        for i in self._tudo("djen_comunicacoes",
+                            "id,process_id,data_disponibilizacao,tipo_documento,texto,"
+                            "intimation_ai_analysis(summary,deadline_days)", {"process_id": "not.is.null"}):
+            if i["process_id"] in out:
+                a = i.get("intimation_ai_analysis") or {}
+                a = a[0] if isinstance(a, list) and a else (a if isinstance(a, dict) else {})
+                out[i["process_id"]]["intimacoes"].append({
+                    "id": i["id"], "data": i.get("data_disponibilizacao"), "tipo": i.get("tipo_documento"),
+                    "texto": i.get("texto"), "resumo": a.get("summary"), "prazo_dias": a.get("deadline_days")})
+        for d in self._tudo("deadlines", "process_id,title,due_date,status",
+                            {"process_id": "not.is.null", "deleted_at": "is.null", "status": "neq.cancelado"}):
+            if d["process_id"] in out:
+                out[d["process_id"]]["prazos"].append(d)
         return out
 
     def processos(self) -> list[ProcessoCRM]:

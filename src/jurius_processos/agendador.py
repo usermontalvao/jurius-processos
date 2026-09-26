@@ -100,6 +100,9 @@ def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list
         entregas.append(("alimentar_datajud", lambda: alimentar.datajud(banco, cfg, procs, aplicar, somente=alvo)))
     if cfg.alimentar_ia:
         entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar, process_ids=ids)))
+    # Depois da IA das intimações: o resumo usa as análises que ela acabou de gravar.
+    if getattr(cfg, "alimentar_ficha", False):
+        entregas.append(("alimentar_ficha", lambda: alimentar.ficha(banco, cfg, procs, aplicar, somente=alvo)))
     res = {}
     for nome, fazer in entregas:
         _etapa(f"Alimentando o CRM: {nome.replace('alimentar_', '').replace('_', ' ')}")

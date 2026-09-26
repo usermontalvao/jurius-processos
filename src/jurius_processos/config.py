@@ -35,6 +35,7 @@ class Config:
     alimentar_intimacoes: bool
     alimentar_datajud: bool
     alimentar_ia: bool
+    alimentar_ficha: bool  # process_insights: partes, vara, audiência e o resumo do processo
     deepseek_key: str
     deepseek_modelo: str
 
@@ -75,6 +76,7 @@ def carregar() -> Config:
         alimentar_intimacoes=_limpo("JURIUS_ALIMENTAR_INTIMACOES", "0") == "1",
         alimentar_datajud=_limpo("JURIUS_ALIMENTAR_DATAJUD", "0") == "1",
         alimentar_ia=_limpo("JURIUS_ALIMENTAR_IA", "0") == "1",
+        alimentar_ficha=_limpo("JURIUS_ALIMENTAR_FICHA", "0") == "1",
         deepseek_key=_limpo("DEEPSEEK_API_KEY"),
         # A mesma calibração da analyze-intimations: o degrau "rápido" da escada.
         deepseek_modelo=_limpo("DEEPSEEK_MODELO", "deepseek-flash"),

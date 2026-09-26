@@ -41,3 +41,12 @@ def test_status_manual_e_soberano():
     banco = BancoFalso([_linha("1" * 20, "x", "recurso")])
     plano = planejar(banco, [_crm("x", "sentenca", manual=True)], arquivados_por_pessoa=set())
     assert plano["status"] == [] and len(plano["conferir"]) == 1
+
+
+def test_troca_de_status_so_avisa_o_cliente_quando_o_fato_e_recente():
+    from datetime import date
+    from jurius_processos.publicar import status_e_novidade
+    hoje = date(2026, 9, 26)
+    assert status_e_novidade("2026-09-20", hoje)          # conciliação de ontem → aviso
+    assert not status_e_novidade("2026-07-17", hoje)      # corrigir fato de julho → calado
+    assert not status_e_novidade(None, hoje)              # sem data do fato → calado

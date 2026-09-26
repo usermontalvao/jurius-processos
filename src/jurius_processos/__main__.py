@@ -65,7 +65,7 @@ def main():
         from dataclasses import replace
         from . import agendador
         _, _, _, procs = etapas.carregar_crm(cfg)
-        todos = replace(cfg, alimentar_intimacoes=True, alimentar_datajud=True, alimentar_ia=bool(cfg.deepseek_key))
+        todos = replace(cfg, alimentar_intimacoes=True, alimentar_datajud=True, alimentar_ia=bool(cfg.deepseek_key), alimentar_ficha=True)
         res = agendador.alimentar_crm(todos, banco, procs, aplicar=a.aplicar)
     elif a.cmd == "publicar":
         _, _, _, procs = etapas.carregar_crm(cfg)

@@ -16,7 +16,7 @@ sem gravar nada. Precisa da migration sql/001_acervo.sql aplicada.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 
@@ -78,7 +78,8 @@ def planejar(banco: Banco, crm_processos, somente: list[str] | None = None,
         novo = p["a"].get("status_crm")
         if not c or not novo or c.status == novo:
             continue
-        mudanca = {"id": c.id, "numero": p["numero"], "de": c.status, "para": novo}
+        mudanca = {"id": c.id, "numero": p["numero"], "de": c.status, "para": novo,
+                   "desde": p["a"].get("status_desde")}
         # Arquivar no CRM pode ser decisão do escritório (segurança concedida,
         # nada mais a fazer) antes de o tribunal arquivar: esse o cérebro nunca
         # desfaz, vira "conferir". Arquivamento de ROBÔ (audit_log sem usuário)
@@ -92,6 +93,20 @@ def planejar(banco: Banco, crm_processos, somente: list[str] | None = None,
         else:
             status.append(mudanca)
     return {"acervo": procs, "cadastrar": cadastrar, "status": status, "conferir": conferir}
+
+
+# Troca de status avisa o cliente no portal (_trg_process_status_notify). Só é
+# novidade se o fato que a justifica é recente; corrigir o estágio de um fato
+# antigo (auditoria de 26/09/2026: 15 processos, conciliação de julho etc.)
+# vai com o cabeçalho que o gatilho respeita e não avisa ninguém.
+SEM_AVISO = {"X-Jurius-Sem-Aviso": "1"}
+NOVIDADE_DIAS = 15
+
+
+def status_e_novidade(desde: str | None, hoje: date | None = None) -> bool:
+    if not desde:
+        return False
+    return ((hoje or date.today()) - date.fromisoformat(desde[:10])).days <= NOVIDADE_DIAS
 
 
 def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = False,
@@ -145,9 +160,10 @@ def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = 
     for s in plano["status"]:
         # Condição dupla: não sobrescreve se alguém marcou manual entre a leitura
         # e agora, nem se o status mudou nesse meio-tempo.
+        extra = {} if status_e_novidade(s.get("desde")) else SEM_AVISO
         r = http.patch("/processes", params={"id": f"eq.{s['id']}", "status_manual": "is.false",
                                              "status": f"eq.{s['de']}"},
-                       headers={"Prefer": "return=representation"}, json={"status": s["para"]})
+                       headers={"Prefer": "return=representation", **extra}, json={"status": s["para"]})
         r.raise_for_status()
         if not r.json():
             continue

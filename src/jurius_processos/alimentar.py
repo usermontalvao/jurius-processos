@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from . import cnj
+from . import ficha as ficha_mod
 from .banco import Banco
 from .config import Config, cabecalhos_supabase
 from .prazo import contar_prazo_da_intimacao
@@ -412,3 +413,94 @@ def _avisar_equipe(http: httpx.Client, usuarios: list[str], it: dict, a: dict) -
     if linhas:
         http.post("/user_notifications", headers={"Prefer": "return=minimal"}, json=linhas).raise_for_status()
     return len(linhas)
+
+
+# ── 4. FICHA E RESUMO DO PROCESSO (process_insights) ────────────────────────
+RESUMOS_POR_CICLO = 60  # 1º ciclo: ~200 processos em 4 ciclos; depois só o que mudou
+
+
+def gerar_resumo(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> str:
+    http = cliente or httpx.Client(timeout=120)
+    r = http.post("https://api.deepseek.com/chat/completions",
+                  headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
+                  json={"model": cfg.deepseek_modelo, "temperature": 0.2, "max_tokens": 700,
+                        "messages": [{"role": "system", "content": ficha_mod.PROMPT_SISTEMA},
+                                     {"role": "user", "content": texto}]})
+    r.raise_for_status()
+    return (r.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+def _prazos_que_contam(prazos: list[dict], hoje: date) -> list[dict]:
+    """Os em aberto e os resolvidos nos últimos 30 dias: prazo novo ou cumprido muda o resumo."""
+    corte = (hoje - timedelta(days=30)).isoformat()
+    return [p for p in prazos if p.get("status") == "pendente" or (p.get("due_date") or "")[:10] >= corte]
+
+
+def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[str] | None = None,
+          limite: int = RESUMOS_POR_CICLO, hoje: date | None = None, crm=None) -> dict:
+    """Escreve a ficha de cada processo do CRM e refaz o resumo só onde a
+    impressão digital das entradas mudou (ficha.assinatura)."""
+    from .crm import CRM
+    hoje = hoje or date.today()
+    crm = crm or CRM(cfg.supabase_url, cfg.supabase_key)
+    dados, agenda, financeiro = crm.para_a_ficha(), crm.agenda(crm_processos), crm.financeiro()
+    nomes = {c.id: c.nome for c in crm.clientes()}
+    http = _cliente(cfg)
+    guardadas = {r["process_id"]: r.get("resumo_assinatura")
+                 for r in _tudo(http, "process_insights", "process_id,resumo_assinatura")}
+
+    agora = _agora()
+    linhas, a_resumir = [], []
+    for proc in crm_processos:
+        if not proc.numero or (somente is not None and proc.numero not in somente):
+            continue
+        r = banco.processo(proc.numero)
+        if not r or not r["analise"]:
+            continue
+        analise, vinc = json.loads(r["analise"]), json.loads(r["vinculo"] or "{}")
+        instancias = json.loads(r["datajud"] or "[]")
+        orgaos = [(i.get("orgaoJulgador") or {}).get("nome") for i in instancias]
+        orgaos += [c["orgao"] for c in banco.comunicacoes(proc.numero) if c["orgao"]]
+        f = ficha_mod.montar(analise, vinc, hoje, orgaos)
+        d = dados.get(proc.id, {})
+        movs = [m for i in instancias for m in i.get("movimentos") or []]
+        e = ficha_mod.entradas({"codigo": proc.codigo, "area": d.get("area"), "cliente": nomes.get(proc.client_id)},
+                               analise, f, d.get("intimacoes") or [], movs,
+                               _prazos_que_contam(d.get("prazos") or [], hoje), agenda.get(proc.id) or [],
+                               financeiro.get(proc.id) or [], d.get("notas"))
+        linha = {"process_id": proc.id, **f, "atualizado_em": agora}
+        linhas.append(linha)
+        ass = ficha_mod.assinatura(e)
+        if ass != guardadas.get(proc.id):
+            ultima = max([i["data"] for i in e["intimacoes"]] + [m["data"] for m in e["movimentos"]] + [""])
+            a_resumir.append((ultima, proc.id, e, ass))
+
+    # Mais recente primeiro: é o que alguém vai abrir hoje.
+    a_resumir.sort(key=lambda x: x[0], reverse=True)
+    resumo = {"fichas": len(linhas), "resumos_desatualizados": len(a_resumir), "resumos_feitos": 0,
+              "aplicado": aplicar}
+    if not aplicar:
+        return resumo
+    for i in range(0, len(linhas), 100):
+        http.post("/process_insights", params={"on_conflict": "process_id"},
+                  headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+                  json=linhas[i:i + 100]).raise_for_status()
+    if not cfg.deepseek_key:
+        resumo["resumos_pulados"] = "sem DEEPSEEK_API_KEY"
+        return resumo
+    ia_http = httpx.Client(timeout=120)
+    for _, pid, e, ass in a_resumir[:limite]:
+        try:
+            texto = gerar_resumo(cfg, ficha_mod.prompt(e), ia_http)
+        except Exception as erro:  # noqa: BLE001 — um processo não derruba os outros
+            log.warning("resumo falhou em %s: %s", pid[:8], erro)
+            resumo.setdefault("falhas", 0)
+            resumo["falhas"] += 1
+            continue
+        if not texto:
+            continue
+        http.patch("/process_insights", params={"process_id": f"eq.{pid}"}, json={
+            "resumo": texto, "resumo_gerado_em": _agora(), "resumo_assinatura": ass,
+            "resumo_modelo": f"deepseek/{cfg.deepseek_modelo}"}).raise_for_status()
+        resumo["resumos_feitos"] += 1
+    return resumo

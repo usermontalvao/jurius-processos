@@ -177,14 +177,14 @@ def fase_por_classe(classe_codigo: int | None, classe_nome: str | None) -> str |
     return None
 
 
-def _agenda_audiencias(agenda: list[dict] | None) -> list[tuple[datetime, str]]:
-    """(quando, título normalizado) das audiências da agenda do CRM, em ordem; sem as canceladas."""
+def _agenda_audiencias(agenda: list[dict] | None) -> list[tuple[datetime, str, datetime | None]]:
+    """(quando, título normalizado, lançada_em) das audiências da agenda do CRM, em ordem; sem as canceladas."""
     out = []
     for e in agenda or []:
         q = _data(e.get("quando"))
         if q and "cancel" not in _norm(e.get("status")):
-            out.append((q, _norm(e.get("titulo"))))
-    return sorted(out)
+            out.append((q, _norm(e.get("titulo")), _data(e.get("criado_em"))))
+    return sorted(out, key=lambda x: x[0])
 
 
 def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje: date,
@@ -348,7 +348,7 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
     audiencias_datadas_passadas = [datetime.fromisoformat(djen_audiencia["data"])] \
         if djen_audiencia and djen_audiencia["data"] and djen_audiencia["data"] < hoje.isoformat() else []
     agenda_futura = None
-    for q, titulo in _agenda_audiencias(agenda):
+    for q, titulo, lancada in _agenda_audiencias(agenda):
         tipo = _tipo_audiencia(titulo)
         # Dia seguinte em diante: no mesmo dia é a própria conciliação lançada
         # na agenda com outro nome ("Audiência Online — ...").
@@ -363,7 +363,7 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         elif tipo == "conciliação":
             chegou("conhecimento", min(q, hoje_dt))
         if q >= hoje_dt and agenda_futura is None:
-            agenda_futura = {"tipo": tipo, "situacao": "designada", "designada_em": None, "data": _dia(q),
+            agenda_futura = {"tipo": tipo, "situacao": "designada", "designada_em": _dia(lancada), "data": _dia(q),
                              "fonte": "agenda"}
 
     # ── classe atual (DataJud da instância mais recente, senão DJEN) ─────────
@@ -506,6 +506,18 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         # desenhado em cima de Instrução na barra de estágios da Linha do Tempo.
         status_crm = "contestacao"
 
+    # Quando aconteceu o fato que dá o status_crm. O CRM avisa o cliente no
+    # portal a cada troca de status; a troca que só CORRIGE o estágio (fato
+    # antigo) vai calada — ver publicar.py.
+    if situacao == "arquivado":
+        status_desde = arquivado_em
+    elif status_crm == "contestacao":
+        status_desde = max(conciliacoes_passadas)
+    elif status_crm in ("conciliacao", "instrucao") and audiencia and audiencia.get("designada_em"):
+        status_desde = datetime.fromisoformat(audiencia["designada_em"])
+    else:
+        status_desde = alcancou.get(fase)
+
     ajuizamentos = [d for d in (_data(i.get("dataAjuizamento")) for i in instancias) if d]
     return {
         "fase": fase,
@@ -513,6 +525,7 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         "situacao": situacao,
         "arquivado_em": _dia(arquivado_em),
         "status_crm": status_crm,
+        "status_desde": _dia(status_desde),
         "saude": saude,
         "fonte": fonte,
         "classe": classe_nome,

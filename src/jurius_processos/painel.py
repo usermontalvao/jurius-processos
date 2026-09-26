@@ -75,7 +75,7 @@ def _chave_ia() -> dict:
 def _o_que_alimenta() -> dict:
     from .config import carregar
     c = carregar()
-    return {"intimacoes": c.alimentar_intimacoes, "datajud": c.alimentar_datajud,
+    return {"intimacoes": c.alimentar_intimacoes, "datajud": c.alimentar_datajud, "ficha": c.alimentar_ficha,
             "ia": c.alimentar_ia and bool(c.deepseek_key), "ia_sem_chave": c.alimentar_ia and not c.deepseek_key}
 
 
@@ -191,7 +191,7 @@ async function carregar(){
   document.getElementById('ind-d').innerHTML=det;
   const al=d.alimenta||{};
   const marca=(on,t)=>(on?'✓ ':'✗ ')+t;
-  document.getElementById('alimenta').textContent='Alimenta o CRM: '+[marca(al.intimacoes,'intimações'),marca(al.datajud,'DataJud'),marca(al.ia,'IA')+(al.ia_sem_chave?' (falta DEEPSEEK_API_KEY)':'')+(al.ia&&['sem_saldo','invalida'].includes((d.chave_ia||{}).estado)?' ⚠ ligada, mas a chave não funciona — nenhuma análise sai':'')].join(' · ')+' — o que está ✗ continua com a rotina antiga do Supabase.';
+  document.getElementById('alimenta').textContent='Alimenta o CRM: '+[marca(al.intimacoes,'intimações'),marca(al.datajud,'DataJud'),marca(al.ficha,'ficha e resumo'),marca(al.ia,'IA')+(al.ia_sem_chave?' (falta DEEPSEEK_API_KEY)':'')+(al.ia&&['sem_saldo','invalida'].includes((d.chave_ia||{}).estado)?' ⚠ ligada, mas a chave não funciona — nenhuma análise sai':'')].join(' · ')+' — o que está ✗ continua com a rotina antiga do Supabase.';
   const ci=d.chave_ia||{};
   const corCi={ok:'var(--ok)',sem_saldo:'var(--err)',invalida:'var(--err)',ausente:'var(--err)'}[ci.estado]||'var(--acc)';
   const elCi=document.getElementById('chave-ia');

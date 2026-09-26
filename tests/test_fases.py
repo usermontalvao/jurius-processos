@@ -332,3 +332,10 @@ def test_conciliacao_que_passou_leva_a_contestacao():
     a = analisar("n", datajud, [], HOJE, agenda=[{"quando": "2026-09-18T14:00:00Z",
                                                   "titulo": "Audiência Online — JULIANA", "status": "pendente"}])
     assert a["status_crm"] == "contestacao" and a["audiencia"] is None
+
+
+def test_status_desde_diz_de_quando_e_o_fato():
+    datajud, coms, agenda = _luana()
+    agenda[1]["criado_em"] = "2026-08-20T15:00:00+00:00"   # instrução lançada na agenda no dia da inicial
+    a = analisar("n", datajud, coms, HOJE, agenda=agenda)
+    assert a["status_crm"] == "instrucao" and a["status_desde"] == "2026-08-20"
