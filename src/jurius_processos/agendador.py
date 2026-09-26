@@ -31,7 +31,13 @@ REPETIR_APOS_FALHA_MIN = 10
 # (ex.: o Supabase recusou a leitura dos clientes) não deixava rastro nenhum na
 # tabela de execuções — só no log do contêiner, que ninguém vê do navegador.
 ESTADO: dict = {"iniciado_em": None, "proximo": None, "ultima_falha": None, "ultima_falha_em": None,
-                "ultimo_ok_em": None}
+                "ultimo_ok_em": None, "etapa": None, "etapa_desde": None, "batida": None}
+
+
+def _etapa(nome: str | None):
+    """O que o serviço está fazendo agora — o indicador do painel lê daqui."""
+    ESTADO["etapa"] = nome
+    ESTADO["etapa_desde"] = datetime.now(FUSO).isoformat(timespec="seconds") if nome else None
 JANELA = range(6, 23)
 
 
@@ -43,21 +49,26 @@ def carga_completa(cfg: Config, banco: Banco) -> dict:
     """
     crm, advs, clientes, procs = etapas.carregar_crm(cfg)
     exec_id = banco.abrir_execucao("carga_completa")
-    res = {
-        "descobrir": etapas.descobrir(banco, advs, cfg.djen_inicio),
-        "por_processo": etapas.descobrir_por_processo(banco, [p.numero for p in procs if p.numero], cfg.djen_inicio),
-        "do_crm": etapas.incluir_do_crm(banco, procs),
-        "enriquecer": etapas.enriquecer(banco, cfg, somente_pendentes=False),
-    }
+    res = {}
+    _etapa("Primeira carga: intimações pela OAB e pelo nome (DJEN, desde 2023)")
+    res["descobrir"] = etapas.descobrir(banco, advs, cfg.djen_inicio)
+    _etapa("Primeira carga: intimações pelo número de cada processo do CRM (DJEN)")
+    res["por_processo"] = etapas.descobrir_por_processo(banco, [p.numero for p in procs if p.numero], cfg.djen_inicio)
+    res["do_crm"] = etapas.incluir_do_crm(banco, procs)
+    _etapa("Primeira carga: andamentos de todos os processos (DataJud)")
+    res["enriquecer"] = etapas.enriquecer(banco, cfg, somente_pendentes=False)
     banco.fechar_execucao(exec_id, True, {k: v for k, v in res.items() if k != "enriquecer"})
     return res
 
 
 def ciclo(cfg: Config, banco: Banco) -> dict:
+    _etapa("Lendo clientes e processos do CRM")
     if not banco.carga_feita():
         log.info("banco sem carga completa: rodando o histórico desde %s antes do 1º ciclo", cfg.djen_inicio)
         carga_completa(cfg, banco)
+    _etapa("Lendo clientes e processos do CRM")
     crm, advs, clientes, procs = etapas.carregar_crm(cfg)
+    _etapa("Buscando intimações novas e andamentos, analisando e publicando")
     res = {
         "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
         "por_processo": etapas.descobrir_por_processo(
@@ -76,13 +87,18 @@ def _laco(cfg: Config, banco: Banco, trava: threading.Lock):
     ESTADO["iniciado_em"] = proximo.isoformat(timespec="seconds")
     while True:
         ESTADO["proximo"] = proximo.isoformat(timespec="seconds")
+        ESTADO["batida"] = datetime.now(FUSO).isoformat(timespec="seconds")
         agora = datetime.now(FUSO)
         # A carga inicial roda a qualquer hora; o ciclo normal, só na janela.
         if agora >= proximo and (agora.hour in JANELA or not banco.carga_feita()):
             with trava:
                 try:
-                    log.info("ciclo: %s", ciclo(cfg, banco))
+                    try:
+                        log.info("ciclo: %s", ciclo(cfg, banco))
+                    finally:
+                        _etapa(None)
                     proximo = agora + timedelta(hours=INTERVALO_H)
+                    ESTADO["ultima_falha"] = None
                     ESTADO["ultimo_ok_em"] = datetime.now(FUSO).isoformat(timespec="seconds")
                 except Exception as e:  # noqa: BLE001 — o laço não pode morrer
                     log.exception("ciclo falhou; nova tentativa em %s min", REPETIR_APOS_FALHA_MIN)

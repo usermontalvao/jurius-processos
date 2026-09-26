@@ -43,6 +43,7 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "execucoes": execs,
         "ocupado": ocupado,
         "carga_feita": banco.carga_feita(),
+        "versao": __import__("os").environ.get("JURIUS_VERSAO", "local"),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         "ultimo_erro": next((e["resumo"].get("erro") for e in execs
                              if not e["ok"] and e["fim"] and isinstance(e["resumo"], dict) and e["resumo"].get("erro")), None),
