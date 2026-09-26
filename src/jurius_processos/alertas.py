@@ -66,9 +66,23 @@ _ACAO_FORTE = re.compile(r"manifest|contrarraz|contraminuta|c[áa]lculo|recurso|
 HORIZONTE_DIAS = 120
 
 
+# Intimação "para ciência" só é prazo nosso com ação concreta. Caso Eduarda
+# (0001000-28, 26/09/2026): "tomar ciência" de despacho que manda a CAIXA
+# recolher o FGTS; o prazo nosso só vem depois, em outra intimação ("comprovada
+# a transferência, intime-se a exequente"). A IA resumiu "prazo de 5 dias para
+# manifestação" — manifestação genérica não basta.
+_CIENCIA = re.compile(r"ci[êe]ncia", re.IGNORECASE)
+# "recolher/recolha" (nós, custas) — não "recolhimento", que é o que o banco faz
+# no ofício.
+_ACAO_PROPRIA = re.compile(r"contrarraz|contraminuta|c[áa]lculo|recurso|embargos|emend|impugn|\brecolh(?:er|a)\b|informar|junt|"
+                           r"comprov|\bpagar\b|agendament|dila[çc][ãa]o|especific|apresent", re.IGNORECASE)
+
+
 def pede_providencia(resumo: str | None) -> bool:
     t = resumo or ""
     if _AUDIENCIA.search(t) and not _ACAO_FORTE.search(t):
+        return False
+    if _CIENCIA.search(t) and not _ACAO_PROPRIA.search(t):
         return False
     return bool(_ACAO.search(t)) and not _SEM_ACAO.search(t)
 

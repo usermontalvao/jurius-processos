@@ -164,12 +164,16 @@ def test_auditoria_dos_alertas_de_26_09():
     man = {"title": "MANIFESTAÇÃO", "due_date": "2026-09-25T00:00:00+00:00", "status": "cumprido",
            "created_at": "2026-09-18T15:00:00+00:00"}
     assert detectar(PROC, [_i("Intimação para informar endereço do réu em 15 dias.")], [man], [], None, agora) == []
-    # Eduarda: real — manifestação em 5 dias e a última MANIFESTAÇÃO é de julho.
-    julho = {"title": "MANIFESTAÇÃO", "due_date": "2026-07-13T00:00:00+00:00", "status": "cumprido",
-             "created_at": "2026-07-06T15:00:00+00:00"}
-    eduarda = _i("Despacho que determina expedição de ofício à CEF, com prazo de 5 dias para manifestação.",
+    # Eduarda: NÃO é prazo (o usuário corrigiu) — ciência de despacho que manda a
+    # CAIXA recolher o FGTS; "5 dias para manifestação" é leitura da IA.
+    eduarda = _i("Intimação para ciência de despacho que determina expedição de ofício à Caixa Econômica Federal "
+                 "para recolhimento de FGTS em conta vinculada da reclamante, com prazo de 5 dias para manifestação.",
                  chegou="2026-09-25T04:00:00+00:00", venc="2026-10-05T00:00:00+00:00")
-    assert len(detectar(PROC, [eduarda], [julho], [], None, datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc))) == 1
+    assert detectar(PROC, [eduarda], [], [], None, datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)) == []
+    # Ciência COM ação nossa continua sendo prazo (Rhayany: dilação para comprovar).
+    rhayany = _i("Intimação para ciência do despacho que defere dilação de prazo por 30 dias para comprovação",
+                 chegou="2026-09-20T04:00:00+00:00", venc="2026-10-08T00:00:00+00:00")
+    assert len(detectar(PROC, [rhayany], [], [], None, datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc))) == 1
 
 
 def test_impugnacao_nao_responde_a_intimacao_de_pericia():
