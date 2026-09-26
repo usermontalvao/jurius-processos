@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta, timezone
 
+from .fases import _norm, _tipo_audiencia, audiencia_no_texto, hora_da_audiencia
+
 ESPERA = timedelta(hours=24)       # tempo para o escritório cadastrar antes do alerta
 FOLGA_PRAZO_DIAS = 5               # prazo cadastrado com vencimento perto conta como o mesmo
 FOLGA_AUDIENCIA_DIAS = 1
@@ -116,26 +118,63 @@ def detectar(proc: dict, intimacoes: list[dict], prazos: list[dict], agenda: lis
                       "description": f"Intimação de {_br(_dia(i.get('data')) or venc)}: {resumo}"},
         })
 
+    # Audiência: a de CADA intimação que designa uma (não só a mais recente da
+    # análise) é conferida na AGENDA — é compromisso, não prazo (pedido do
+    # usuário, caso Carlos 0000676-46). Mais a da análise (DataJud/DJEN).
+    candidatas: list[dict] = []
+    for i in intimacoes:
+        chegou = _dt(i.get("chegou_em"))
+        achada = audiencia_no_texto(i.get("texto")) if chegou and agora - chegou >= ESPERA else None
+        if achada and achada[1]:
+            dia = achada[1].date().isoformat()
+            candidatas.append({"tipo": achada[0], "data": dia, "hora": hora_da_audiencia(i.get("texto"), dia),
+                               "designada_em": (i.get("data") or "")[:10] or None, "fonte": "djen"})
     if audiencia and audiencia.get("data") and audiencia.get("fonte") != "agenda":
-        quando = date.fromisoformat(audiencia["data"][:10])
-        designada = _dia(audiencia.get("designada_em")) if audiencia.get("designada_em") else None
-        ja_passou_o_prazo = designada is not None and (hoje - designada).days >= 1
-        na_agenda = any((d := _dia_local(e.get("quando"))) and abs((d - quando).days) <= FOLGA_AUDIENCIA_DIAS
-                        and "cancel" not in (e.get("status") or "") for e in agenda)
-        if quando >= hoje and ja_passou_o_prazo and not na_agenda:
-            tipo = audiencia.get("tipo") or "audiência"
-            rotulo = "Audiência" if tipo == "audiência" else f"Audiência de {tipo}"
-            hora = audiencia.get("hora")
-            out.append({
-                "chave": f"audiencia:{proc['id']}:{quando.isoformat()}", "tipo": "audiencia", "intimation_id": None,
-                **_ids(base), "titulo": f"{rotulo} em {_br(quando)}{' às ' + hora if hora else ''}",
-                "data": quando.isoformat(), "hora": hora,
-                "descricao": f"{rotulo} designada ({_br(designada) if designada else 'intimação'}) e não está na agenda.",
-                "dados": {**base, "title": f"{rotulo.upper()} - {(proc.get('cliente') or '').upper()}".strip(" -"),
-                          "date": quando.isoformat(), "time": hora or "", "type": "hearing",
-                          "description": f"{rotulo} designada no processo {proc.get('codigo') or ''}."},
-            })
+        candidatas.append(audiencia)
+    ja_avisadas: set[str] = set()
+    for aud in candidatas:
+        _alerta_de_audiencia(proc, base, aud, agenda, hoje, ja_avisadas, out)
     return out
+
+
+def _alerta_de_audiencia(proc: dict, base: dict, audiencia: dict, agenda: list[dict], hoje: date,
+                         ja_avisadas: set[str], out: list[dict]) -> None:
+    if audiencia["data"][:10] in ja_avisadas:
+        return
+    quando = date.fromisoformat(audiencia["data"][:10])
+    designada = _dia(audiencia.get("designada_em")) if audiencia.get("designada_em") else None
+    ja_passou_o_prazo = designada is not None and (hoje - designada).days >= 1
+    tipo_aud = _tipo_audiencia(_norm(audiencia.get("tipo")))
+    na_agenda = False
+    for e in agenda:
+        d = _dia_local(e.get("quando"))
+        if not d or "cancel" in (e.get("status") or ""):
+            continue
+        if abs((d - quando).days) <= FOLGA_AUDIENCIA_DIAS:
+            na_agenda = True
+            break
+        # Redesignada: a agenda já tem a PRÓXIMA audiência desse tipo em outra
+        # data (auditoria de 26/09/2026: Carlos Daniel 29/09→27/10, Paulo
+        # Fabiano 01/10→29/10, Joanil 03/11 antecipada para 30/09). Título
+        # genérico ("Audiência Online — X") vale para qualquer tipo.
+        tipo_ag = _tipo_audiencia(_norm(e.get("titulo")))
+        if d >= hoje and (tipo_ag == tipo_aud or "audiência" in (tipo_ag, tipo_aud)):
+            na_agenda = True
+            break
+    if quando >= hoje and ja_passou_o_prazo and not na_agenda:
+        tipo = audiencia.get("tipo") or "audiência"
+        rotulo = "Audiência" if tipo == "audiência" else f"Audiência de {tipo}"
+        hora = audiencia.get("hora")
+        out.append({
+            "chave": f"audiencia:{proc['id']}:{quando.isoformat()}", "tipo": "audiencia", "intimation_id": None,
+            **_ids(base), "titulo": f"{rotulo} em {_br(quando)}{' às ' + hora if hora else ''}",
+            "data": quando.isoformat(), "hora": hora,
+            "descricao": f"{rotulo} designada ({_br(designada) if designada else 'intimação'}) e não está na agenda.",
+            "dados": {**base, "title": f"{rotulo.upper()} - {(proc.get('cliente') or '').upper()}".strip(" -"),
+                      "date": quando.isoformat(), "time": hora or "", "type": "hearing",
+                      "description": f"{rotulo} designada no processo {proc.get('codigo') or ''}."},
+        })
+        ja_avisadas.add(quando.isoformat())
 
 
 # Tipo de providência, para reconhecer o prazo cadastrado ANTES da intimação

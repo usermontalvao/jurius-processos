@@ -178,3 +178,31 @@ def test_impugnacao_nao_responde_a_intimacao_de_pericia():
     imp = {"title": "IMPUGNAÇÃO", "due_date": "2026-09-29T00:00:00+00:00", "status": "pendente",
            "created_at": "2026-09-16T15:00:00+00:00"}
     assert len(detectar(PROC, [i], [imp], [], None, datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc))) == 1
+
+
+def test_audiencia_da_intimacao_e_conferida_na_agenda_e_vira_compromisso():
+    # Carlos (0000676-46): instrução de 11/11 às 08:00 já está na agenda → nada.
+    texto = "DESPACHO 1. designo audiência de instrução presencial para o dia 11/11/2026, às 08:00 horas."
+    i = {**_i("Despacho que designa audiência de instrução presencial", chegou="2026-09-21T04:00:00+00:00",
+              venc="2026-12-10T00:00:00+00:00"), "texto": texto, "data": "2026-09-21"}
+    agora = datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)
+    agenda = [{"quando": "2026-11-11T12:00:00+00:00", "status": "pendente"}]
+    assert detectar(PROC, [i], [], agenda, None, agora) == []
+    # Fora da agenda → alerta de COMPROMISSO (não de prazo), com dia, hora e tipo.
+    [a] = detectar(PROC, [i], [], [], None, agora)
+    assert a["tipo"] == "audiencia" and a["dados"]["type"] == "hearing"
+    assert a["dados"]["date"] == "2026-11-11" and a["dados"]["time"] == "08:00"
+    assert a["titulo"] == "Audiência de instrução em 11/11/2026 às 08:00"
+    # A mesma audiência também vinda da análise: um alerta só.
+    aud = {"tipo": "instrução", "data": "2026-11-11", "hora": "08:00", "designada_em": "2026-09-21", "fonte": "djen"}
+    assert len(detectar(PROC, [i], [], [], aud, agora)) == 1
+
+
+def test_audiencia_redesignada_que_ja_esta_na_agenda_em_outra_data_nao_avisa():
+    agora = datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc)
+    velha = {"tipo": "conciliação", "data": "2026-09-29", "hora": None, "designada_em": "2026-08-20", "fonte": "djen"}
+    agenda = [{"quando": "2026-10-27T12:15:00+00:00", "titulo": "AUDIÊNCIA INICIAL - CARLOS DANIEL", "status": "pendente"}]
+    assert detectar(PROC, [], [], agenda, velha, agora) == []
+    # Tipo diferente na agenda (instrução) não cobre a conciliação.
+    outra = [{"quando": "2026-12-01T12:00:00+00:00", "titulo": "AUDIÊNCIA DE INSTRUÇÃO - X", "status": "pendente"}]
+    assert len(detectar(PROC, [], [], outra, velha, agora)) == 1
