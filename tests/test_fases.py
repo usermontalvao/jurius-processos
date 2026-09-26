@@ -95,9 +95,16 @@ def test_baixa_na_instancia_recursal_nao_arquiva_o_processo():
     assert a["situacao"] == "ativo"
 
 
-def test_extincao_da_execucao_encerra():
+def test_extincao_da_execucao_nao_arquiva_so_o_tribunal_arquiva():
+    # Extinção é quando o dinheiro sai: arquivar ali escondia valor a levantar.
     a = analisar("n", [inst("G1", [mov(26, "2024-01-01"), mov(11385, "2024-06-01"), mov(196, "2025-01-01")])], [], HOJE)
-    assert a["situacao"] == "arquivado"
+    assert a["situacao"] == "ativo"
+    assert a["execucao_extinta_em"] == "2025-01-01"
+    assert any(p["tipo"] == "execucao_extinta" for p in a["pendencias"])
+    # O arquivamento do tribunal (246) arquiva de fato.
+    b = analisar("n", [inst("G1", [mov(26, "2024-01-01"), mov(11385, "2024-06-01"), mov(196, "2025-01-01"),
+                                   mov(246, "2025-02-01", "Arquivamento definitivo")])], [], HOJE)
+    assert b["situacao"] == "arquivado" and b["arquivado_em"] == "2025-02-01"
 
 
 def test_parado_demais():
@@ -126,8 +133,9 @@ def test_djen_mais_novo_que_datajud_extingue_a_execucao():
     coms = [{"data": "2026-08-19", "classe": "ATOrd", "texto": "1.Diante do cumprimento do acordo, "
              "declaro extinta a execução dos créditos trabalhistas"}]
     a = analisar("n", datajud, coms, HOJE)
-    assert a["situacao"] == "arquivado"
-    assert a["status_crm"] == "arquivado"
+    assert a["situacao"] == "ativo"
+    assert a["execucao_extinta_em"] == "2026-08-19"
+    assert a["status_crm"] != "arquivado"
 
 
 def test_djen_antigo_nao_sobrepoe_datajud():
@@ -167,7 +175,11 @@ def test_extinta_a_presente_execucao_e_alvara_no_texto():
     datajud = [inst("JE", [mov(26, "2026-06-01"), mov(221, "2026-08-07"), mov(14739, "2026-09-10")])]
     coms = [{"data": "2026-09-21", "texto": "julgo extinta a presente execução. ... expedição de alvará eletrônico"}]
     a = analisar("n", datajud, coms, HOJE)
-    assert a["situacao"] == "arquivado"
+    # Caso real 10353746920268110001: extinta por pagamento, alvará a levantar.
+    assert a["situacao"] == "ativo" and a["status_crm"] == "cumprimento"
+    assert "2026-09-21" in a["alvaras"]
+    tipos = {p["tipo"] for p in a["pendencias"]}
+    assert {"execucao_extinta", "valor_a_levantar"} <= tipos
 
 
 def test_ciencia_da_sentenca_no_djen():
@@ -181,3 +193,25 @@ def test_alvara_so_no_djen_vira_pendencia():
              "texto": "Intimação das partes acerca da expedição do alvará eletrônico de pagamento."}]
     a = analisar("n", [], coms, HOJE)
     assert any(p["tipo"] == "valor_a_levantar" for p in a["pendencias"])
+
+
+def test_recurso_distribuido_e_julgado_depois_do_arquivo_reabre():
+    # Caso real 10127312020268110001: arquivado no Juizado e recurso andando na Turma.
+    datajud = [inst("JE", [mov(26, "2026-03-01"), mov(221, "2026-06-01"), mov(246, "2026-07-22", "Arquivamento definitivo")]),
+               inst("TR", [mov(26, "2026-08-01", "Distribuição"), mov(12000, "2026-08-20", "Pedido de inclusão em pauta virtual")])]
+    a = analisar("n", datajud, [], HOJE)
+    assert a["situacao"] == "ativo"
+
+
+def test_peticao_depois_do_arquivo_nao_reabre():
+    datajud = [inst("JE", [mov(26, "2026-03-01"), mov(246, "2026-07-22", "Arquivamento definitivo"),
+                           mov(85, "2026-08-10", "Petição"), mov(11383, "2026-08-11", "Ato ordinatório")])]
+    assert analisar("n", datajud, [], HOJE)["situacao"] == "arquivado"
+
+
+def test_intimacao_depois_do_arquivo_pede_conferencia():
+    datajud = [inst("JE", [mov(26, "2026-03-01"), mov(246, "2026-07-22", "Arquivamento definitivo")])]
+    coms = [{"data": "2026-09-02", "texto": "Intimação da parte autora."}]
+    a = analisar("n", datajud, coms, HOJE)
+    assert a["situacao"] == "arquivado"
+    assert any(p["tipo"] == "intimacao_apos_arquivamento" for p in a["pendencias"])

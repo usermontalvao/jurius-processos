@@ -121,9 +121,10 @@ def atualizar(numero: str):
             banco.gravar_comunicacao(item, n, "processo")
         for numero_, status, inst, erro in ClienteDataJud(cfg.datajud_key).lote([n]):
             banco.gravar_datajud(numero_, status, inst, erro)
-        _, _, clientes, procs = etapas.carregar_crm(cfg)
-        etapas.analisar(banco, clientes, procs, somente=[n])
-        publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n])
+        crm, _, clientes, procs = etapas.carregar_crm(cfg)
+        etapas.analisar(banco, clientes, procs, somente=[n], financeiro=crm.financeiro())
+        publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=[n],
+                          cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
     return processo(n)
 
 
@@ -136,7 +137,7 @@ def vincular_cliente(client_id: str):
     "este cliente já tinha N processos; vinculei".
     """
     with _trava:
-        _, _, clientes, procs = etapas.carregar_crm(cfg)
+        crm, _, clientes, procs = etapas.carregar_crm(cfg)
         cliente = next((c for c in clientes if c.id == client_id), None)
         if not cliente:
             raise HTTPException(404, "cliente não encontrado")
@@ -146,8 +147,9 @@ def vincular_cliente(client_id: str):
         achados = vinculo.processos_do_nome(cliente.nome, partes)
         numeros = [n for n, _ in achados]
         if numeros:
-            etapas.analisar(banco, clientes, procs, somente=numeros)
-            publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=numeros)
+            etapas.analisar(banco, clientes, procs, somente=numeros, financeiro=crm.financeiro())
+            publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar, somente=numeros,
+                              cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
     return {"cliente": cliente.nome, "processos": [
         {"numero": cnj.formatar(n), "polo": polo,
          "vinculo": json.loads(banco.processo(n)["vinculo"]).get("tipo")} for n, polo in achados]}

@@ -27,12 +27,14 @@ JANELA = range(6, 23)
 
 
 def ciclo(cfg: Config, banco: Banco) -> dict:
-    _, advs, clientes, procs = etapas.carregar_crm(cfg)
+    crm, advs, clientes, procs = etapas.carregar_crm(cfg)
     res = {
         "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
+        "por_processo": etapas.descobrir_por_processo(
+            banco, [p.numero for p in procs if p.numero], (date.today() - timedelta(days=10)).isoformat()),
         "do_crm": etapas.incluir_do_crm(banco, procs),
         "enriquecer": etapas.enriquecer(banco, cfg),
-        "analisar": etapas.analisar(banco, clientes, procs),
+        "analisar": etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro()),
     }
     res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar,
                                         cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)

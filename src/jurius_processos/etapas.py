@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import date
 
-from . import cnj, fases, vinculo
+from . import cnj, fases, financeiro as fin, vinculo
 from .banco import Banco
 from .config import Config
 from .crm import CRM
@@ -45,6 +45,34 @@ def descobrir(banco: Banco, advogados: list[Advogado], inicio: str, fim: date | 
                     if banco.garantir_processo(numero, "djen"):
                         resumo["processos_novos"] += 1
                 log.info("%s %s..%s: %d intimações", adv.nome, a, b, len(achados))
+        banco.fechar_execucao(exec_id, True, resumo)
+    except Exception as e:
+        resumo["erro"] = str(e)
+        banco.fechar_execucao(exec_id, False, resumo)
+        raise
+    resumo["pedidos_djen"] = djen.pedidos
+    return resumo
+
+
+def descobrir_por_processo(banco: Banco, numeros: list[str], inicio: str, fim: date | None = None,
+                           djen: ClienteDJEN | None = None) -> dict:
+    """Intimações de cada processo do CRM pelo NÚMERO, não só as endereçadas ao advogado.
+
+    A busca pela OAB/nome só traz o que tem o advogado como destinatário. A
+    intimação do mesmo processo dirigida à outra parte, ao INSS ou ao próprio
+    cliente ficava de fora — o laboratório de 26/09/2026 achou 57 no Supabase
+    que o serviço não tinha. Para a linha do tempo, todas contam.
+    """
+    djen = djen or ClienteDJEN()
+    fim = fim or date.today()
+    exec_id = banco.abrir_execucao("descobrir_por_processo")
+    resumo = {"inicio": inicio, "processos": 0, "intimacoes_novas": 0}
+    try:
+        for numero in numeros:
+            for item in djen.do_processo(numero, inicio, fim.isoformat()):
+                if banco.gravar_comunicacao(item, numero, "processo"):
+                    resumo["intimacoes_novas"] += 1
+            resumo["processos"] += 1
         banco.fechar_execucao(exec_id, True, resumo)
     except Exception as e:
         resumo["erro"] = str(e)
@@ -91,7 +119,7 @@ def enriquecer(banco: Banco, cfg: Config, somente_pendentes: bool = True, idade_
 
 # ── 3. ANÁLISE: fase + vínculo ─────────────────────────────────────────────
 def analisar(banco: Banco, clientes, crm_processos, hoje: date | None = None,
-             somente: list[str] | None = None) -> dict:
+             somente: list[str] | None = None, financeiro: dict[str, list[dict]] | None = None) -> dict:
     hoje = hoje or date.today()
     indice = vinculo.IndiceClientes(clientes)
     por_numero = {p.numero: p for p in crm_processos if p.numero}
@@ -106,6 +134,14 @@ def analisar(banco: Banco, clientes, crm_processos, hoje: date | None = None,
         instancias = json.loads(linha["datajud"]) if linha["datajud"] else []
         a = fases.analisar(numero, instancias, comunicacoes, hoje)
         v = vinculo.vincular(numero, comunicacoes, indice, por_numero.get(numero))
+        if financeiro is not None:
+            # Alvará × Financeiro só para processo do CRM: o de fora não tem lançamento.
+            pid = v.get("crm_process_id")
+            acordos = None
+            if pid:
+                acordos = financeiro.get(pid, []) + (financeiro.get(f"cliente:{v['client_id']}", []) if v.get("client_id") else [])
+            textos = [c.get("texto") or "" for c in comunicacoes if "alvar" in (c.get("texto") or "").lower()]
+            a = fin.cruzar(a, acordos, textos, hoje)
 
         antes_a = json.loads(linha["analise"]) if linha["analise"] else None
         antes_v = json.loads(linha["vinculo"]) if linha["vinculo"] else None

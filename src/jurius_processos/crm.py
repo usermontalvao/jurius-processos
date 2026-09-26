@@ -108,6 +108,23 @@ class CRM:
             ultimo[str(a["entity_id"])] = (a["created_at"], a.get("user_id"))
         return {pid for pid, (_, uid) in ultimo.items() if uid}
 
+    def financeiro(self) -> dict[str, list[dict]]:
+        """Acordos do Financeiro por processo do CRM, cada um com suas parcelas.
+
+        Acordo sem processo ligado entra pelo cliente (chave `cliente:<id>`):
+        o alvará de um processo pode ter sido lançado no acordo "solto" do cliente.
+        """
+        acordos = self._tudo("agreements", "id,client_id,process_id,total_value,status")
+        parcelas: dict[str, list[dict]] = {}
+        for p in self._tudo("installments", "agreement_id,status,payment_date,paid_value,value"):
+            parcelas.setdefault(p["agreement_id"], []).append(p)
+        out: dict[str, list[dict]] = {}
+        for a in acordos:
+            a["parcelas"] = parcelas.get(a["id"], [])
+            chave = a["process_id"] or f"cliente:{a['client_id']}"
+            out.setdefault(chave, []).append(a)
+        return out
+
     def processos(self) -> list[ProcessoCRM]:
         return [
             ProcessoCRM(p["id"], cnj.limpar(p.get("process_code")), p["client_id"], p.get("status"), bool(p.get("status_manual")))

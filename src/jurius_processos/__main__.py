@@ -29,6 +29,8 @@ def main():
     e.add_argument("--todos", action="store_true")
     e.add_argument("--limite", type=int)
     sub.add_parser("analisar")
+    dp = sub.add_parser("descobrir-processos")  # carga do histórico, pelo número de cada processo do CRM
+    dp.add_argument("--desde")
     r = sub.add_parser("relatorio")
     r.add_argument("--saida", default="dados/relatorio.md")
     sub.add_parser("ciclo")
@@ -46,11 +48,14 @@ def main():
         print("advogados:", [(x.nome, x.oab, x.uf) for x in advs])
         res = etapas.descobrir(banco, advs, a.desde or cfg.djen_inicio)
         res["do_crm"] = etapas.incluir_do_crm(banco, procs)
+    elif a.cmd == "descobrir-processos":
+        _, _, _, procs = etapas.carregar_crm(cfg)
+        res = etapas.descobrir_por_processo(banco, [p.numero for p in procs if p.numero], a.desde or cfg.djen_inicio)
     elif a.cmd == "enriquecer":
         res = etapas.enriquecer(banco, cfg, somente_pendentes=not a.todos, limite=a.limite)
     elif a.cmd == "analisar":
-        _, _, clientes, procs = etapas.carregar_crm(cfg)
-        res = etapas.analisar(banco, clientes, procs)
+        crm, _, clientes, procs = etapas.carregar_crm(cfg)
+        res = etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro())
     elif a.cmd == "relatorio":
         _, _, clientes, procs = etapas.carregar_crm(cfg)
         res = {"arquivo": relatorio.gerar(banco, clientes, procs, a.saida)}
@@ -59,17 +64,9 @@ def main():
         res = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key,
                                 aplicar=a.aplicar or cfg.publicar,
                                 cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
-    else:  # ciclo: só a janela recente no DJEN; a carga completa é o `descobrir`
-        _, advs, clientes, procs = etapas.carregar_crm(cfg)
-        res = {
-            "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
-            "do_crm": etapas.incluir_do_crm(banco, procs),
-            "enriquecer": etapas.enriquecer(banco, cfg),
-            "analisar": etapas.analisar(banco, clientes, procs),
-        }
-        res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key,
-                                            aplicar=cfg.publicar, cadastrar_auto=cfg.cadastrar_auto,
-                                            atualizar_status=cfg.atualizar_status)
+    else:  # ciclo: o mesmo que o agendador roda
+        from . import agendador
+        res = agendador.ciclo(cfg, banco)
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
 

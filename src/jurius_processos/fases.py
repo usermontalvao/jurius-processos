@@ -177,6 +177,13 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
             alcancou[fase] = quando
 
     ultimo_arquivo = ultimo_desarquivo = arquivo_provisorio = None
+    # Último ato que só acontece em processo VIVO: julgamento, recurso novo
+    # distribuído, pauta, audiência, decisão. Depois de um arquivamento, ele
+    # reabre o processo mesmo sem o código de desarquivamento — o laboratório
+    # de 26/09/2026 achou 37 arquivados com recurso distribuído e julgado
+    # depois. Petição e ato ordinatório NÃO contam: chegam em processo
+    # arquivado o tempo todo (pedido de alvará, de certidão).
+    ultimo_ato_vivo = None
     ultima_suspensao = ultimo_fim_suspensao = None
     transito = cumprimento_inicio = extincao_execucao = ultimo_substantivo = None
     julgamentos_favoraveis: list[datetime] = []
@@ -189,6 +196,11 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
     for m in movs:
         c, q, grau, nome_n = m["codigo"], m["quando"], m["grau"], _norm(m["nome"])
         recursal = grau in GRAUS_RECURSAIS
+
+        if (c in JULGAMENTO or c in RECURSO_JULGADO or c in AUDIENCIA or c in DECISOES_INICIAIS
+                or (c in DISTRIBUICAO and recursal) or "inclusao em pauta" in nome_n
+                or "pauta virtual" in nome_n or "julgamento de merito" in nome_n):
+            ultimo_ato_vivo = q
 
         if c in DISTRIBUICAO:
             chegou("distribuicao", q)
@@ -324,12 +336,16 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
 
     # ── situação ──────────────────────────────────────────────────────────
     situacao, arquivado_em = "ativo", None
-    reaberto = ultimo_desarquivo
+    reaberto = max(filter(None, [ultimo_desarquivo,
+                                 ultimo_ato_vivo if ultimo_arquivo and ultimo_ato_vivo and ultimo_ato_vivo > ultimo_arquivo else None]),
+                   default=None)
+    # Extinção da execução NÃO arquiva: é o momento em que o dinheiro sai
+    # (alvará/RPV). Arquivar ali tirava o processo da lista justamente com
+    # valor a levantar. Só o arquivamento do próprio tribunal arquiva.
+    execucao_extinta = bool(extincao_execucao and (not reaberto or extincao_execucao > reaberto)
+                            and fase in ("cumprimento_sentenca", "execucao"))
     if ultimo_arquivo and (not reaberto or ultimo_arquivo > reaberto):
         situacao, arquivado_em = "arquivado", ultimo_arquivo
-    elif extincao_execucao and (not reaberto or extincao_execucao > reaberto) \
-            and fase in ("cumprimento_sentenca", "execucao"):
-        situacao, arquivado_em = "arquivado", extincao_execucao
     elif arquivo_provisorio and (not reaberto or arquivo_provisorio > reaberto):
         situacao = "suspenso"
         ultima_suspensao = max(filter(None, [ultima_suspensao, arquivo_provisorio]))
@@ -386,6 +402,15 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
                   f"Suspenso há {(agora - ultima_suspensao).days} dias", ultima_suspensao)
     if fonte != "datajud":
         pendencia("sem_linha_do_tempo", "baixa", "O DataJud não tem os andamentos deste processo")
+    if situacao == "arquivado" and arquivado_em:
+        depois = [d for d in (_data(c.get("data")) for c in comunicacoes) if d and d > arquivado_em]
+        if depois:
+            pendencia("intimacao_apos_arquivamento", "media",
+                      f"{len(depois)} intimação(ões) depois do arquivamento: conferir se o processo voltou a andar",
+                      max(depois))
+    if execucao_extinta and situacao == "ativo":
+        pendencia("execucao_extinta", "baixa",
+                  "Execução extinta: falta o levantamento do valor e o arquivamento pelo tribunal", extincao_execucao)
 
     sev = {p["severidade"] for p in pend}
     if fonte == "nenhuma":
@@ -425,4 +450,6 @@ def analisar(numero: str, instancias: list[dict], comunicacoes: list[dict], hoje
         "marcos": [{**m, "quando": _dia(m["quando"])} for m in marcos],
         "total_movimentos": len(movs),
         "total_intimacoes": len(comunicacoes),
+        "alvaras": sorted({_dia(a) for a in alvaras}),
+        "execucao_extinta_em": _dia(extincao_execucao) if execucao_extinta else None,
     }
