@@ -419,15 +419,26 @@ def _avisar_equipe(http: httpx.Client, usuarios: list[str], it: dict, a: dict) -
 RESUMOS_POR_CICLO = 60  # 1º ciclo: ~200 processos em 4 ciclos; depois só o que mudou
 
 
+class ResumoIncompleto(Exception):
+    """A IA parou antes do fim (limite de tokens) ou não escreveu nada."""
+
+
 def gerar_resumo(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> str:
-    http = cliente or httpx.Client(timeout=120)
+    # 26/09/2026: com max_tokens 700, 55 de 60 respostas vieram vazias e 2
+    # cortadas no meio — o modelo gasta parte do limite pensando antes de
+    # escrever. Resposta que não terminou nunca é gravada.
+    http = cliente or httpx.Client(timeout=180)
     r = http.post("https://api.deepseek.com/chat/completions",
                   headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
-                  json={"model": cfg.deepseek_modelo, "temperature": 0.2, "max_tokens": 700,
+                  json={"model": cfg.deepseek_modelo, "temperature": 0.2, "max_tokens": 4000,
                         "messages": [{"role": "system", "content": ficha_mod.PROMPT_SISTEMA},
                                      {"role": "user", "content": texto}]})
     r.raise_for_status()
-    return (r.json()["choices"][0]["message"]["content"] or "").strip()
+    escolha = r.json()["choices"][0]
+    conteudo = ((escolha.get("message") or {}).get("content") or "").strip()
+    if escolha.get("finish_reason") != "stop" or not conteudo:
+        raise ResumoIncompleto(f"finish_reason={escolha.get('finish_reason')}, {len(conteudo)} caracteres")
+    return conteudo
 
 
 def _prazos_que_contam(prazos: list[dict], hoje: date) -> list[dict]:

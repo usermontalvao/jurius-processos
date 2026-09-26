@@ -20,6 +20,9 @@ import json
 import re
 from datetime import date
 
+# Sobe quando o pedido à IA muda: a assinatura muda junto e os resumos são
+# refeitos. 2 = 26/09/2026, depois dos resumos cortados pelo max_tokens.
+VERSAO_RESUMO = 2
 MAX_INTIMACOES = 12
 MAX_MOVIMENTOS = 25
 MAX_NOTAS = 6
@@ -124,6 +127,7 @@ def entradas(proc: dict, analise: dict, ficha: dict, intimacoes: list[dict], mov
     ints = sorted(intimacoes, key=lambda i: (i.get("data") or "", i.get("id") or ""), reverse=True)[:MAX_INTIMACOES]
     movs = sorted(movimentos, key=lambda m: m.get("dataHora") or "", reverse=True)[:MAX_MOVIMENTOS]
     return {
+        "versao": VERSAO_RESUMO,
         "processo": {"numero": proc.get("codigo"), "area": proc.get("area"), "cliente": proc.get("cliente")},
         "ficha": {k: ficha.get(k) for k in ("polo_ativo", "polo_passivo", "orgao", "classe", "fase", "situacao",
                                             "proxima_audiencia")},

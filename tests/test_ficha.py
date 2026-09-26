@@ -157,3 +157,23 @@ def test_comarca_no_formato_do_tjmt_no_datajud():
 def test_turma_recursal_do_sistema_de_juizados_nao_e_cidade():
     assert ficha.comarca("Gabinete do Juiz 4 - 1ª Turma Recursal do Sistema de Juizados Especiais") is None
     assert ficha.comarca("Gabinete do Juiz 1 - 3ª Turma Recursal do Sistema de Juizados Especiais - Comarca de Cuiabá - SDCR") == "Cuiabá"
+
+
+def _resposta(conteudo, fim):
+    return httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={
+        "choices": [{"message": {"content": conteudo}, "finish_reason": fim}]})))
+
+
+def test_resumo_cortado_ou_vazio_nunca_e_gravado():
+    import pytest
+    cfg = SimpleNamespace(deepseek_key="k", deepseek_modelo="m")
+    assert alimentar.gerar_resumo(cfg, "x", _resposta("Texto inteiro.", "stop")) == "Texto inteiro."
+    for conteudo, fim in [("A fase atual é de cumprimento, com a execução", "length"), ("", "stop"), (None, "stop")]:
+        with pytest.raises(alimentar.ResumoIncompleto):
+            alimentar.gerar_resumo(cfg, "x", _resposta(conteudo, fim))
+
+
+def test_mudar_a_versao_do_pedido_refaz_os_resumos(monkeypatch):
+    a = ficha.assinatura(_entradas())
+    monkeypatch.setattr(ficha, "VERSAO_RESUMO", ficha.VERSAO_RESUMO + 1)
+    assert ficha.assinatura(_entradas()) != a
