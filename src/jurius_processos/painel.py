@@ -61,6 +61,11 @@ HTML = """<!doctype html>
 main{max-width:1100px;margin:0 auto;padding:24px 16px}
 h1{font-size:20px;margin:0}header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .sub{color:var(--mut);font-size:12px}.sp{flex:1}
+.ind{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px;margin-bottom:12px;border:1px solid var(--ln);background:var(--card)}
+.ind b{font-size:15px}.ind .det{color:var(--mut);font-size:12px;margin-top:2px}
+.luz{width:14px;height:14px;border-radius:50%;flex:none}
+.luz.verde{background:var(--ok)}.luz.laranja{background:var(--acc);animation:pisca 1.2s infinite}.luz.vermelha{background:var(--err)}
+@keyframes pisca{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.luz.laranja{animation:none}}
 button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
 button:disabled{opacity:.5;cursor:default}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px}
@@ -76,6 +81,7 @@ code{font-size:11px;color:var(--mut);word-break:break-word}
 <header><div><h1>Jurius Processos</h1>
 <div class="sub">Descobre pelo DJEN (OAB e nome completo), enriquece no DataJud, analisa e publica no CRM. Ciclo automático a cada 2 h, das 06h às 22h (Cuiabá).</div></div>
 <div class="sp"></div><span id="estado" class="sub"></span><button id="rodar">Rodar ciclo agora</button></header>
+<div class="ind" id="ind"><span class="luz" id="luz"></span><div><b id="ind-t">Conectando…</b><div class="det" id="ind-d"></div></div><div class="sp"></div><span class="sub" id="versao"></span></div>
 <div id="aviso"></div>
 <div class="grid" id="nums"></div>
 <div class="cols" id="dist"></div>
@@ -98,15 +104,35 @@ async function carregar(){
   if(!d.carga_feita) av.push('Primeira carga em andamento: o histórico desde 2023 é buscado antes de publicar qualquer coisa no CRM (≈30 min).');
   if(d.ultimo_erro) av.push('Última falha: '+esc(d.ultimo_erro));
   const ag=d.agendador||{};
-  if(ag.ultima_falha) av.push('Agendador falhou em '+hora(ag.ultima_falha_em)+': '+esc(ag.ultima_falha)+' — nova tentativa às '+hora(ag.proximo));
-  if(!ag.iniciado_em) av.push('O agendador não está rodando.');
   document.getElementById('aviso').innerHTML=av.map(t=>'<div class="card" style="margin-bottom:12px;border-color:var(--acc)">'+t+'</div>').join('');
-  document.getElementById('estado').textContent=d.ocupado?'Trabalhando agora…':'Parado · atualizado '+hora(new Date());
+  // ── O indicador: responde "está rodando?" sem abrir log nenhum ──
+  const semSinal=ag.batida && (Date.now()-new Date(ag.batida))>3*60*1000;
+  let cor,t,det;
+  if(!ag.iniciado_em){cor='vermelha';t='Agendador parado';det='O serviço responde, mas não está rodando os ciclos. Reinicie a stack.'}
+  else if(d.ocupado){cor='laranja';t='Trabalhando agora';det=(ag.etapa||'Ciclo em andamento')+(ag.etapa_desde?' · desde '+hora(ag.etapa_desde):'')}
+  else if(semSinal){cor='vermelha';t='Sem sinal do agendador';det='Última batida às '+hora(ag.batida)}
+  else if(ag.ultima_falha){cor='vermelha';t='Última tentativa falhou';det=esc(ag.ultima_falha)+' · nova tentativa às '+hora(ag.proximo)}
+  else{cor='verde';t='No ar, esperando o próximo ciclo';det='Próximo às '+hora(ag.proximo)+(ag.ultimo_ok_em?' · último ciclo ok às '+hora(ag.ultimo_ok_em):'')}
+  document.getElementById('luz').className='luz '+cor;
+  document.getElementById('ind-t').textContent=t;
+  document.getElementById('ind-d').innerHTML=det;
+  document.getElementById('versao').textContent='versão '+(d.versao||'?');
+  document.getElementById('estado').textContent='atualizado '+hora(new Date());
   document.getElementById('rodar').disabled=d.ocupado;
 }
+// Pela internet o ciclo exige o token (JURIUS_TOKEN_API). Pedido uma vez e
+// guardado só nesta aba; nunca vai na URL.
 document.getElementById('rodar').onclick=async()=>{
-  const r=await fetch('ciclo',{method:'POST'});
-  if(!r.ok){alert((await r.json()).detail||'Não foi possível');return}
+  const chamar=tk=>fetch('ciclo',{method:'POST',headers:tk?{Authorization:'Bearer '+tk}:{}});
+  let tk=null; try{tk=sessionStorage.getItem('jp_token')}catch(e){}
+  let r=await chamar(tk);
+  if(r.status===403){
+    tk=prompt('Para rodar o ciclo pela internet, cole o token do serviço (JURIUS_TOKEN_API):');
+    if(!tk)return;
+    r=await chamar(tk.trim());
+    if(r.ok){try{sessionStorage.setItem('jp_token',tk.trim())}catch(e){}}
+  }
+  if(!r.ok){alert(r.status===403?'Token incorreto.':((await r.json()).detail||'Não foi possível'));return}
   carregar();
 };
 carregar();setInterval(carregar,15000);

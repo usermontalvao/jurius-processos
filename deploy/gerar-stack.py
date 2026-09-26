@@ -81,6 +81,7 @@ services:
       JURIUS_PUBLICAR: "1"
       JURIUS_ATUALIZAR_STATUS: "1"
       JURIUS_CADASTRAR_AUTO: "0"
+      JURIUS_VERSAO: "{versao()}"
       JURIUS_BANCO: /dados/cerebro.sqlite3
       DJEN_INICIO: "2023-01-01"
       TZ: America/Cuiaba
