@@ -59,8 +59,10 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "versao": __import__("os").environ.get("JURIUS_VERSAO", "local"),
         "chave_supabase": _descreve_chave(),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
-        "ultimo_erro": next((e["resumo"].get("erro") for e in execs
-                             if not e["ok"] and e["fim"] and isinstance(e["resumo"], dict) and e["resumo"].get("erro")), None),
+        # Só a falha que ainda vale: se depois dela alguma etapa terminou bem,
+        # o painel não assusta com erro antigo (a carga interrompida do 1º boot).
+        "ultimo_erro": next((e["resumo"].get("erro") if not e["ok"] and isinstance(e["resumo"], dict) else None
+                             for e in execs if e["fim"]), None),
     }
 
 

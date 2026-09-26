@@ -18,3 +18,13 @@ def test_painel_agrega_sem_expor_nome_de_parte(tmp_path):
     assert d["fases"] == {"conhecimento": 1, "recursal": 1}
     assert "FULANO SECRETO" not in json.dumps(d)
     assert "painel.json" in HTML
+
+
+def test_falha_antiga_some_depois_de_um_ciclo_ok(tmp_path):
+    b = Banco(tmp_path / "f.sqlite3")
+    i = b.abrir_execucao("descobrir")
+    b.fechar_execucao(i, False, {"erro": "interrompida"})
+    assert dados(b, False)["ultimo_erro"] == "interrompida"
+    j = b.abrir_execucao("analisar")
+    b.fechar_execucao(j, True, {})
+    assert dados(b, False)["ultimo_erro"] is None
