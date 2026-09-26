@@ -20,9 +20,10 @@ from contextlib import asynccontextmanager
 from datetime import date, timedelta
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
-from . import agendador, cnj, etapas, publicar, vinculo
+from . import agendador, cnj, etapas, painel, publicar, vinculo
 from .banco import Banco
 from .config import carregar
 from .datajud import ClienteDataJud
@@ -56,6 +57,37 @@ async def ciclo_de_vida(_app):
 
 
 app = FastAPI(title="Jurius Processos", lifespan=ciclo_de_vida)
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def raiz():
+    return painel.HTML
+
+
+@app.get("/painel.json", include_in_schema=False)
+def painel_json():
+    return painel.dados(banco, _trava.locked())
+
+
+@app.post("/ciclo", include_in_schema=False)
+def rodar_ciclo(request: Request):
+    """Botão "Rodar ciclo agora" do painel. Só aceita pedido da própria máquina:
+    atrás do túnel, o ciclo roda pelo agendador ou com o token."""
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(403, "só pela própria máquina")
+    if _trava.locked():
+        raise HTTPException(409, "já há um ciclo rodando")
+
+    def _rodar():
+        with _trava:
+            try:
+                agendador.ciclo(cfg, banco)
+            except Exception:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).exception("ciclo manual falhou")
+
+    threading.Thread(target=_rodar, daemon=True, name="ciclo-manual").start()
+    return {"iniciado": True}
 
 
 @app.get("/saude")
