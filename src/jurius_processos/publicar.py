@@ -159,6 +159,7 @@ def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = 
             "process_code": cnj.formatar(p["numero"]),
             "status": a.get("status_crm") or "andamento",
             "court": a.get("orgao"),
+            "distributed_at": f"{a['ajuizado_em']}T00:00:00Z" if a.get("ajuizado_em") else None,
         })
         r.raise_for_status()
         novo_id = r.json()[0]["id"]
