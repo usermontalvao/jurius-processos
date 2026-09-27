@@ -118,6 +118,25 @@ class Banco:
         )
         return cur.rowcount == 1
 
+    def comunicacoes_no_periodo(self, de: str | None, ate: str | None, numero: str | None = None,
+                                limite: int = 3000) -> list[sqlite3.Row]:
+        """O arquivo inteiro do serviço, por data de disponibilização (AAAA-MM-DD,
+        inclusivo). É o que o CRM consulta para períodos antigos: o Supabase só
+        recebe a janela recente, e aqui fica tudo desde a carga inicial."""
+        onde, args = [], []
+        if de:
+            onde.append("substr(data,1,10) >= ?"); args.append(de)
+        if ate:
+            onde.append("substr(data,1,10) <= ?"); args.append(ate)
+        if numero:
+            onde.append("numero = ?"); args.append(numero)
+        sql = "select * from comunicacoes" + (" where " + " and ".join(onde) if onde else "") + " order by data desc limit ?"
+        return self.con.execute(sql, (*args, limite)).fetchall()
+
+    def intervalo_das_comunicacoes(self) -> dict:
+        r = self.con.execute("select min(substr(data,1,10)), max(substr(data,1,10)), count(*) from comunicacoes").fetchone()
+        return {"mais_antiga": r[0], "mais_recente": r[1], "total": r[2]}
+
     def comunicacoes(self, numero: str) -> list[sqlite3.Row]:
         return self.con.execute("select * from comunicacoes where numero=? order by data", (numero,)).fetchall()
 

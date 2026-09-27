@@ -6,6 +6,9 @@ aba Processos (lê do Supabase). Ela serve para o que precisa ser na hora:
   POST /clientes/{client_id}/vincular cliente acabou de ser cadastrado: acha os
                                       processos dele no acervo e vincula
   GET  /processos/{numero}            análise completa (depuração)
+  GET  /intimacoes?de=&ate=&numero=   o ARQUIVO de intimações (desde a carga
+                                      inicial) — o CRM consulta para períodos
+                                      que o Supabase não tem
 
 Autenticação: o JWT do usuário logado no CRM (validado no próprio Supabase)
 ou, de servidor para servidor, JURIUS_TOKEN_API.
@@ -113,6 +116,61 @@ def rodar_ciclo(request: Request):
 
     threading.Thread(target=_rodar, daemon=True, name="ciclo-manual").start()
     return {"iniciado": True}
+
+
+LIMITE_ARQUIVO = 3000
+
+
+def _intimacao_do_arquivo(r) -> dict:
+    """Uma linha do arquivo no formato que o CRM já usa (o mesmo registro que
+    o alimentar grava no Supabase), mais destinatários e advogados."""
+    from .alimentar import linha_intimacao
+    try:
+        item = json.loads(r["bruto"] or "{}")
+    except ValueError:
+        item = {}
+    linha = linha_intimacao(item, r["numero"], None, None)
+    linha.update({
+        "hash": linha.get("hash") or r["hash"],
+        "djen_id": linha.get("djen_id") or r["id"],
+        "data_disponibilizacao": (linha.get("data_disponibilizacao") or r["data"] or "")[:10],
+        "sigla_tribunal": linha.get("sigla_tribunal") or r["tribunal"],
+        "nome_orgao": linha.get("nome_orgao") or r["orgao"],
+        "texto": linha.get("texto") or r["texto"],
+        "destinatarios": json.loads(r["destinatarios"] or "[]"),
+        "advogados": json.loads(r["advogados"] or "[]"),
+        "motivo": r["motivo"],
+    })
+    linha.pop("process_id", None)
+    linha.pop("client_id", None)
+    linha.pop("lida", None)
+    return linha
+
+
+def _data_ok(v: str | None) -> str | None:
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(v[:10]).isoformat()
+    except ValueError:
+        raise HTTPException(400, f"data inválida: {v} (use AAAA-MM-DD)")
+
+
+@app.get("/intimacoes", dependencies=[Depends(autorizado)])
+def intimacoes_do_arquivo(de: str | None = None, ate: str | None = None, numero: str | None = None):
+    d, a = _data_ok(de), _data_ok(ate)
+    # Só os dígitos: consulta não valida dígito verificador (é filtro, não cadastro).
+    n = "".join(ch for ch in numero if ch.isdigit()) if numero else None
+    if numero and len(n) != 20:
+        raise HTTPException(400, "número de processo precisa de 20 dígitos")
+    linhas = banco.comunicacoes_no_periodo(d, a, n, LIMITE_ARQUIVO + 1)
+    return {
+        "de": d, "ate": a, "numero": n,
+        "total": min(len(linhas), LIMITE_ARQUIVO),
+        "cortado": len(linhas) > LIMITE_ARQUIVO,
+        "arquivo": banco.intervalo_das_comunicacoes(),
+        "itens": [_intimacao_do_arquivo(r) for r in linhas[:LIMITE_ARQUIVO]],
+    }
 
 
 @app.get("/saude")

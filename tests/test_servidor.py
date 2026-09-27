@@ -114,3 +114,25 @@ def test_atualizar_durante_o_ciclo_entra_na_fila_em_vez_de_recusar(api, monkeypa
         r = cli.post("/processos/10141411620268110001/atualizar", headers={"Authorization": "Bearer segredo"})
         assert r.status_code == 202 and r.json()["na_fila"] is True
     assert iniciadas == [("10141411620268110001",)]
+
+
+def test_arquivo_de_intimacoes_por_periodo(api):
+    import jurius_processos.api as m
+    cli, _ = api
+    for i, (n, d) in enumerate([("1" * 20, "2024-03-10"), ("2" * 20, "2024-11-30"), ("1" * 20, "2026-09-14")]):
+        m.banco.gravar_comunicacao({"id": 100 + i, "hash": f"h{i}", "data_disponibilizacao": d, "siglaTribunal": "TRT23",
+                                    "texto": f"texto {i}", "numeroprocessocommascara": "x", "destinatarios": [{"nome": "FULANO", "polo": "A"}]},
+                                   n, "processo")
+    m.banco.con.commit()
+    assert cli.get("/intimacoes?de=2024-01-01&ate=2024-12-31").status_code == 401, "sem login, nada"
+    r = cli.get("/intimacoes?de=2024-01-01&ate=2024-12-31", headers={"Authorization": "Bearer segredo"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["total"] == 2 and [x["hash"] for x in j["itens"]] == ["h1", "h0"], "só 2024, mais recente primeiro"
+    assert j["itens"][0]["data_disponibilizacao"] == "2024-11-30" and j["itens"][0]["sigla_tribunal"] == "TRT23"
+    assert j["itens"][1]["destinatarios"] == [{"nome": "FULANO", "polo": "A"}]
+    assert "lida" not in j["itens"][0] and "process_id" not in j["itens"][0]
+    assert j["arquivo"] == {"mais_antiga": "2024-03-10", "mais_recente": "2026-09-14", "total": 3}
+    r = cli.get(f"/intimacoes?numero={'1' * 20}", headers={"Authorization": "Bearer segredo"})
+    assert [x["hash"] for x in r.json()["itens"]] == ["h2", "h0"]
+    assert cli.get("/intimacoes?de=ontem", headers={"Authorization": "Bearer segredo"}).status_code == 400
