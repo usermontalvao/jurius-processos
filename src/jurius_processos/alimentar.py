@@ -322,10 +322,30 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
 PROMPT_SISTEMA = """Você é um assistente jurídico. Analise a intimação e retorne APENAS um JSON válido:
 {
   "urgency": "baixa" | "media" | "alta" | "critica",
-  "deadline": { "days": número de dias para o prazo },
+  "deadline": { "days": número de dias para o prazo, "action": "o que o advogado precisa fazer" },
   "summary": "resumo curto da intimação em 1-2 frases"
 }
-Critérios de urgência: critica = prazo <= 2 dias; alta = prazo <= 5 dias; media = prazo <= 15 dias; baixa = prazo > 15 dias ou sem prazo."""
+Critérios de urgência: critica = prazo <= 2 dias; alta = prazo <= 5 dias; media = prazo <= 15 dias; baixa = prazo > 15 dias ou sem prazo.
+"action" vira o TÍTULO do prazo no CRM: CURTO (até 50 caracteres), verbo no infinitivo + o objeto, sem número de processo, sem nome de parte, sem "no prazo de".
+Exemplos: "Apresentar contrarrazões ao recurso", "Manifestar sobre os cálculos", "Informar o endereço da reclamada", "Comparecer à audiência UNA".
+Quando for só ciência de um ato, use "Manifestar sobre <ato>", ex.: "Manifestar sobre o acórdão"."""
+
+# Título que é rótulo, não providência — não serve de título de prazo.
+_TITULOS_GENERICOS = {"prazo", "intimação", "intimacao", "manifestação", "manifestacao", "ciência", "ciencia", "providência"}
+
+
+def titulo_da_providencia(a: dict | None) -> str | None:
+    """O "action" da IA limpo para virar título de prazo: frase curta, com a
+    primeira letra maiúscula e sem ponto final. Vazio ou genérico → None."""
+    bruto = ((a or {}).get("deadline") or {}).get("action") if isinstance((a or {}).get("deadline"), dict) else None
+    if not isinstance(bruto, str):
+        return None
+    t = " ".join(bruto.split()).strip().rstrip(".;:")
+    if len(t) < 6 or t.lower() in _TITULOS_GENERICOS:
+        return None
+    if len(t) > 60:  # título de prazo é curto; a IA às vezes esquece o limite
+        t = t[:60].rsplit(" ", 1)[0]
+    return t[0].upper() + t[1:]
 
 ROTULO_URGENCIA = {"critica": "🚨 CRÍTICA", "alta": "⚠️ Urgente", "media": "📋 Atenção", "baixa": "📄 Nova"}
 
@@ -391,6 +411,7 @@ def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list
                       headers={"Prefer": "resolution=ignore-duplicates,return=representation"}, json={
             "intimation_id": it["id"], "summary": a.get("summary"), "urgency": a.get("urgency"),
             "deadline_days": dias,
+            "deadline_description": titulo_da_providencia(a),
             "deadline_due_date": f"{contagem['vencimento']}T00:00:00.000Z" if contagem else None,
             "analyzed_at": agora, "model_used": f"deepseek/{cfg.deepseek_modelo} (cérebro)",
             "created_at": agora, "updated_at": agora})
@@ -399,6 +420,41 @@ def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list
             continue  # a rotina antiga chegou antes: nada de aviso em dobro
         resumo["analisadas"] += 1
         resumo["avisos"] += _avisar_equipe(http, usuarios, it, a)
+    return resumo
+
+
+def completar_titulos(cfg: Config, aplicar: bool, limite: int = 20) -> dict:
+    """Análises gravadas antes do "action" no prompt ficaram sem título de
+    prazo (deadline_description nulo) — o CRM caía em "Prazo Intimação -
+    Processo X". A cada ciclo, as mais recentes com prazo ganham o título.
+    Só PREENCHE o vazio: título já gravado (ou editado) nunca é trocado."""
+    if not cfg.deepseek_key:
+        return {"pulado": "sem DEEPSEEK_API_KEY"}
+    http = _cliente(cfg)
+    faltando = http.get("/intimation_ai_analysis", params={
+        "select": "intimation_id", "deadline_description": "is.null", "deadline_days": "gt.0",
+        "order": "created_at.desc", "limit": str(limite)}).json()
+    resumo = {"sem_titulo": len(faltando), "preenchidos": 0, "aplicado": aplicar}
+    if not aplicar or not faltando:
+        return resumo
+    textos = {x["id"]: x.get("texto") for x in http.get("/djen_comunicacoes", params={
+        "select": "id,texto", "id": f"in.({','.join(f['intimation_id'] for f in faltando)})"}).json()}
+    ia_http = httpx.Client(timeout=90)
+    for f in faltando:
+        texto = textos.get(f["intimation_id"])
+        if not texto:
+            continue
+        try:
+            titulo = titulo_da_providencia(analisar_com_ia(cfg, texto, ia_http))
+        except Exception as e:  # noqa: BLE001
+            log.warning("título falhou em %s: %s", f["intimation_id"][:8], e)
+            continue
+        if not titulo:
+            continue
+        http.patch("/intimation_ai_analysis",
+                   params={"intimation_id": f"eq.{f['intimation_id']}", "deadline_description": "is.null"},
+                   json={"deadline_description": titulo, "updated_at": _agora()}).raise_for_status()
+        resumo["preenchidos"] += 1
     return resumo
 
 

@@ -71,8 +71,12 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
     _etapa("Buscando intimações novas e andamentos, analisando e publicando")
     res = {
         "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
+        # Rodízio: ativos todo ciclo, arquivados 1× por dia (ver etapas.rodizio).
         "por_processo": etapas.descobrir_por_processo(
-            banco, [p.numero for p in procs if p.numero], (date.today() - timedelta(days=10)).isoformat()),
+            banco,
+            etapas.rodizio([p.numero for p in procs if p.numero], etapas.arquivados_conhecidos(banco, procs),
+                           rodada=int(datetime.now().timestamp() // 7200)),
+            (date.today() - timedelta(days=10)).isoformat()),
         "do_crm": etapas.incluir_do_crm(banco, procs),
         "enriquecer": etapas.enriquecer(banco, cfg),
         "analisar": etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro(), agenda=crm.agenda(procs), prazos=crm.prazos(procs)),
@@ -100,6 +104,8 @@ def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list
         entregas.append(("alimentar_datajud", lambda: alimentar.datajud(banco, cfg, procs, aplicar, somente=alvo)))
     if cfg.alimentar_ia:
         entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar, process_ids=ids)))
+        if alvo is None:  # completar títulos antigos é do ciclo, não do clique
+            entregas.append(("alimentar_titulos", lambda: alimentar.completar_titulos(cfg, aplicar)))
     # Depois da IA das intimações: o resumo usa as análises que ela acabou de gravar.
     if getattr(cfg, "alimentar_ficha", False):
         entregas.append(("alimentar_ficha", lambda: alimentar.ficha(banco, cfg, procs, aplicar, somente=alvo)))

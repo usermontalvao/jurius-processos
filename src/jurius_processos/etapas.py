@@ -54,6 +54,38 @@ def descobrir(banco: Banco, advogados: list[Advogado], inicio: str, fim: date | 
     return resumo
 
 
+FATIAS_ARQUIVADOS = 12  # ciclo de 2 h → cada arquivado é consultado 1× por dia
+
+
+def _fatia(numero: str, fatias: int) -> int:
+    import hashlib
+    return int(hashlib.sha1(numero.encode()).hexdigest(), 16) % fatias
+
+
+def rodizio(numeros: list[str], arquivados: set[str], rodada: int, fatias: int = FATIAS_ARQUIVADOS) -> list[str]:
+    """Quem é consultado pelo número NESTA rodada.
+
+    Ativos e suspensos: sempre. Arquivados: só a fatia da vez (1/12 por ciclo),
+    ou seja, uma vez por dia cada — desarquivamento continua aparecendo, mas o
+    ciclo deixa de passar 9 min pedindo ao DJEN 250 processos parados (27/09:
+    464 consultas, 0 intimações novas). A fatia vem do número, então é estável
+    entre ciclos e reinícios."""
+    vez = rodada % fatias
+    return [n for n in numeros if n not in arquivados or _fatia(n, fatias) == vez]
+
+
+def arquivados_conhecidos(banco: Banco, crm_processos) -> set[str]:
+    """Arquivado no CRM OU na análise do próprio serviço."""
+    out = {p.numero for p in crm_processos if p.numero and (getattr(p, "status", "") or "") == "arquivado"}
+    for r in banco.processos("analise is not null"):
+        try:
+            if (json.loads(r["analise"]) or {}).get("situacao") == "arquivado":
+                out.add(r["numero"])
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 def descobrir_por_processo(banco: Banco, numeros: list[str], inicio: str, fim: date | None = None,
                            djen: ClienteDJEN | None = None) -> dict:
     """Intimações de cada processo do CRM pelo NÚMERO, não só as endereçadas ao advogado.

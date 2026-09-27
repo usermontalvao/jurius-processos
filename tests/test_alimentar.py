@@ -199,3 +199,44 @@ def test_ia_grava_prazo_em_dias_uteis_e_avisa_a_equipe(cfg, monkeypatch):
     assert r == {"pendentes": 1, "analisadas": 1, "avisos": 2, "aplicado": True}
     analise = [e for e in sup.escritas if e[1] == "intimation_ai_analysis"][0][3]
     assert analise["deadline_due_date"].startswith("2026-09-09")  # mesmo caso de referência do CRM
+
+
+def test_titulo_da_providencia_vem_limpo_ou_nao_vem():
+    t = alimentar.titulo_da_providencia
+    assert t({"deadline": {"days": 15, "action": "  apresentar contrarrazões ao recurso ordinário. "}}) == "Apresentar contrarrazões ao recurso ordinário"
+    assert t({"deadline": {"days": 5, "action": "Prazo"}}) is None
+    assert t({"deadline": {"days": 5}}) is None
+    assert t({"deadline": None}) is None
+    assert t(None) is None
+    longo = t({"deadline": {"action": "Manifestar " + "sobre os cálculos " * 10}})
+    assert longo and len(longo) <= 60 and not longo.endswith(" ")
+
+
+def test_ia_grava_o_titulo_do_prazo(cfg, monkeypatch):
+    it = {"id": "i3", "texto": "t", "numero_processo": "1", "numero_processo_mascara": "1-1",
+          "sigla_tribunal": "TRT23", "data_disponibilizacao": "2026-08-17", "process_id": None}
+    sup = Supabase({"djen_comunicacoes": [it], "intimation_ai_analysis": [], "holidays": [],
+                    "profiles": [], "user_notifications": [], "djen_destinatarios": []})
+    ligar(monkeypatch, sup)
+    monkeypatch.setattr(alimentar, "analisar_com_ia", lambda cfg, t, c=None: {
+        "urgency": "media", "deadline": {"days": 15, "action": "manifestar sobre os cálculos de liquidação"}, "summary": "s"})
+    alimentar.ia(cfg, aplicar=True)
+    analise = [e for e in sup.escritas if e[1] == "intimation_ai_analysis"][0][3]
+    assert analise["deadline_description"] == "Manifestar sobre os cálculos de liquidação"
+
+
+def test_rodizio_ativos_sempre_arquivados_uma_vez_por_dia():
+    from jurius_processos import etapas
+    ativos = [f"{i:020d}" for i in range(30)]
+    arquivados = [f"{i:020d}" for i in range(100, 340)]  # 240 arquivados
+    todos = ativos + arquivados
+    arq = set(arquivados)
+    vistos = {}
+    for rodada in range(etapas.FATIAS_ARQUIVADOS):  # um dia de ciclos de 2 h
+        da_vez = etapas.rodizio(todos, arq, rodada)
+        assert set(ativos) <= set(da_vez), "ativo é consultado todo ciclo"
+        assert len(da_vez) < len(todos) * 0.3, "o ciclo não pede mais os 240 arquivados"
+        for n in da_vez:
+            vistos[n] = vistos.get(n, 0) + 1
+    assert all(vistos.get(n) == 1 for n in arquivados), "cada arquivado exatamente 1× por dia"
+    assert etapas.rodizio(todos, arq, 5) == etapas.rodizio(todos, arq, 5 + etapas.FATIAS_ARQUIVADOS), "estável entre dias e reinícios"
