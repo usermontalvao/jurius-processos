@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -133,19 +134,7 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
             vinculadas.add(proc.id)
 
     resumo = {"desde": corte, "novas": len(novas), "processos_tocados": len(vinculadas), "aplicado": aplicar}
-    if aplicar and somente is None:
-        # O card "Sincronização DJEN" da aba Processos lê djen_sync_history;
-        # com o cron 5 (run-djen-sync) desligado, quem registra é o servidor.
-        agora = _agora()
-        http.post("/djen_sync_history", headers={"Prefer": "return=minimal"}, json={
-            "synced_at": agora, "run_started_at": inicio_execucao, "run_finished_at": agora,
-            "items_found": len(novas), "items_saved": len(novas),
-            "date_range_start": corte, "date_range_end": hoje.isoformat(),
-            "source": "jurius-processos", "origin": "servidor", "trigger_type": "ciclo",
-            "status": "success", "success": True,
-            "message": f"{len(novas)} intimação(ões) nova(s) desde {corte}",
-        }).raise_for_status()
-    if not aplicar or not novas:
+    if not aplicar:
         return resumo
     for i in range(0, len(novas), 100):
         http.post("/djen_comunicacoes", params={"on_conflict": "hash"},
@@ -155,7 +144,31 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
     marcas = {"djen_synced": True, "djen_last_sync": _agora(), "djen_has_data": True}
     for pid in vinculadas:
         http.patch("/processes", params={"id": f"eq.{pid}"}, json=marcas).raise_for_status()
+    if somente is None:
+        _registrar_sincronizacao(http, inicio_execucao, corte, hoje, len(novas))
     return resumo
+
+
+def _registrar_sincronizacao(http: httpx.Client, inicio: str, corte: str, hoje: date, novas: int) -> None:
+    """O card "Sincronização DJEN" da aba Processos lê djen_sync_history; com
+    o cron 5 (run-djen-sync) desligado, quem registra é o servidor.
+
+    Vem DEPOIS das intimações e nunca derruba a entrega: de 26 a 28/09/2026 a
+    coluna id não tinha default, este POST (então feito antes) dava 23502 e
+    nenhuma intimação entrou no CRM. O id vai daqui pelo mesmo motivo."""
+    agora = _agora()
+    try:
+        http.post("/djen_sync_history", headers={"Prefer": "return=minimal"}, json={
+            "id": str(uuid.uuid4()),
+            "synced_at": agora, "run_started_at": inicio, "run_finished_at": agora,
+            "items_found": novas, "items_saved": novas,
+            "date_range_start": corte, "date_range_end": hoje.isoformat(),
+            "source": "jurius-processos", "origin": "servidor", "trigger_type": "ciclo",
+            "status": "success", "success": True,
+            "message": f"{novas} intimação(ões) nova(s) desde {corte}",
+        }).raise_for_status()
+    except httpx.HTTPError as e:
+        log.warning("histórico da sincronização não gravou (intimações já entregues): %s", e)
 
 
 def revincular_orfas(cfg: Config, crm_processos, aplicar: bool, limite: int = 200) -> dict:

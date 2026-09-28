@@ -60,11 +60,36 @@ def test_intimacao_nova_entra_uma_vez_e_a_antiga_nao(tmp_path, cfg, monkeypatch)
     # O card "Sincronização DJEN" continua vivo com o cron 5 desligado.
     [hist] = [e[3] for e in sup.escritas if e[1] == "djen_sync_history"]
     assert hist["source"] == "jurius-processos" and hist["items_saved"] == 1 and hist["success"] is True
+    assert hist["id"]  # a coluna não tinha default: o id vai daqui
+    ordem = [e[1] for e in sup.escritas if e[0] == "POST"]
+    assert ordem.index("djen_comunicacoes") < ordem.index("djen_sync_history")
     linha = posts[0][3][0]
     assert linha["hash"] == "novo" and linha["process_id"] == "p1" and linha["client_id"] == "c1"
     # marca de sincronização no processo, nunca o status
     patch = [e for e in sup.escritas if e[0] == "PATCH"][0][3]
     assert "status" not in patch and patch["djen_has_data"] is True
+
+
+def test_historico_recusado_nao_impede_as_intimacoes(tmp_path, cfg, monkeypatch):
+    """26–28/09/2026: djen_sync_history recusava o POST (id sem default) e,
+    como ele vinha antes, nenhuma intimação entrava no CRM."""
+    b = Banco(tmp_path / "b.sqlite3")
+    n = "1" * 20
+    b.garantir_processo(n, "djen")
+    b.gravar_comunicacao({"id": 1, "hash": "novo", "data_disponibilizacao": "2026-09-25", "texto": "t",
+                          "siglaTribunal": "TJMT", "destinatarioadvogados": [], "destinatarios": []}, n, "oab")
+    sup = Supabase({})
+
+    def recusa_historico(req):
+        if req.url.path.endswith("/djen_sync_history"):
+            return httpx.Response(400, json={"code": "23502"})
+        return sup(req)
+
+    monkeypatch.setattr(alimentar, "_cliente",
+                        lambda cfg: httpx.Client(base_url="https://x/rest/v1", transport=httpx.MockTransport(recusa_historico)))
+    r = alimentar.intimacoes(b, cfg, [proc("p1", n, "1111111-11.1111.1.11.1111")], aplicar=True, hoje=date(2026, 9, 28))
+    assert r["novas"] == 1
+    assert [e[3][0]["hash"] for e in sup.escritas if e[1] == "djen_comunicacoes"] == ["novo"]
 
 
 def test_ensaio_nao_escreve(tmp_path, cfg, monkeypatch):
