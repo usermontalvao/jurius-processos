@@ -92,6 +92,36 @@ def test_historico_recusado_nao_impede_as_intimacoes(tmp_path, cfg, monkeypatch)
     assert [e[3][0]["hash"] for e in sup.escritas if e[1] == "djen_comunicacoes"] == ["novo"]
 
 
+def _deepseek(conteudo, fim="stop", pedidos=None):
+    def responder(req):
+        if pedidos is not None:
+            pedidos.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": conteudo}, "finish_reason": fim}]})
+    return httpx.Client(transport=httpx.MockTransport(responder))
+
+
+def test_toda_chamada_a_deepseek_desliga_o_pensamento(cfg):
+    """28/09/2026: sem isso a deepseek-flash gastava os 500 tokens pensando e
+    devolvia vazio — 3 de 7 intimações ficaram sem resumo, sem erro nenhum."""
+    pedidos = []
+    alimentar.analisar_com_ia(cfg, "texto", _deepseek('{"urgency": "baixa", "summary": "ok"}', pedidos=pedidos))
+    alimentar.gerar_resumo(cfg, "texto", _deepseek("Resumo inteiro.", pedidos=pedidos))
+    assert [p["thinking"] for p in pedidos] == [{"type": "disabled"}] * 2
+
+
+def test_resposta_vazia_da_ia_vira_falha_contada(cfg, monkeypatch):
+    with pytest.raises(alimentar.RespostaVazia):
+        alimentar.analisar_com_ia(cfg, "texto", _deepseek("", "length"))
+    sup = Supabase({"djen_comunicacoes": [{"id": "i1", "texto": "t"}], "intimation_ai_analysis": [],
+                    "holidays": [], "profiles": []})
+    ligar(monkeypatch, sup)
+    monkeypatch.setattr(alimentar, "analisar_com_ia",
+                        lambda *a: (_ for _ in ()).throw(alimentar.RespostaVazia("finish_reason=length, 0 caracteres")))
+    r = alimentar.ia(cfg, aplicar=True)
+    assert r["pendentes"] == 1 and r["analisadas"] == 0 and r["falhas"] == 1
+    assert "length" in r["ultima_falha"]
+
+
 def test_ensaio_nao_escreve(tmp_path, cfg, monkeypatch):
     b = Banco(tmp_path / "b.sqlite3")
     sup = Supabase({})

@@ -373,16 +373,34 @@ def _json_da_resposta(texto: str) -> dict | None:
         return None
 
 
-def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> dict | None:
+def corpo_deepseek(cfg: Config, mensagens: list[dict], max_tokens: int, temperatura: float, **extra) -> dict:
+    """O corpo de toda chamada à DeepSeek. `thinking` desligado SEMPRE: a
+    deepseek-flash pensa por padrão e o pensamento gasta o max_tokens — com
+    500, a resposta vinha vazia e a intimação ficava sem resumo, calada
+    (3 de 7 em 28/09/2026; títulos de prazo, 1 de 20). É o mesmo que o CRM
+    faz em supabase/functions/_shared/ai-text-ladder.ts."""
+    return {"model": cfg.deepseek_modelo, "temperature": temperatura, "max_tokens": max_tokens,
+            "thinking": {"type": "disabled"}, "messages": mensagens, **extra}
+
+
+class RespostaVazia(Exception):
+    """A IA respondeu sem conteúdo aproveitável (vazio, cortado ou sem JSON)."""
+
+
+def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> dict:
     http = cliente or httpx.Client(timeout=90)
     r = http.post("https://api.deepseek.com/chat/completions",
                   headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
-                  json={"model": cfg.deepseek_modelo, "temperature": 0.1, "max_tokens": 500,
-                        "response_format": {"type": "json_object"},
-                        "messages": [{"role": "system", "content": PROMPT_SISTEMA},
-                                     {"role": "user", "content": f"Analise esta intimação:\n\n{(texto or '')[:3000]}"}]})
+                  json=corpo_deepseek(cfg, [{"role": "system", "content": PROMPT_SISTEMA},
+                                            {"role": "user", "content": f"Analise esta intimação:\n\n{(texto or '')[:3000]}"}],
+                                      max_tokens=500, temperatura=0.1, response_format={"type": "json_object"}))
     r.raise_for_status()
-    return _json_da_resposta(r.json()["choices"][0]["message"]["content"])
+    escolha = r.json()["choices"][0]
+    conteudo = (escolha.get("message") or {}).get("content") or ""
+    a = _json_da_resposta(conteudo)
+    if not a:
+        raise RespostaVazia(f"finish_reason={escolha.get('finish_reason')}, {len(conteudo)} caracteres")
+    return a
 
 
 def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list[str] | None = None) -> dict:
@@ -413,8 +431,8 @@ def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list
             a = analisar_com_ia(cfg, it.get("texto") or "", ia_http)
         except Exception as e:  # noqa: BLE001 — uma intimação não derruba as outras
             log.warning("IA falhou em %s: %s", it["id"][:8], e)
-            continue
-        if not a:
+            resumo["falhas"] = resumo.get("falhas", 0) + 1
+            resumo["ultima_falha"] = f"{type(e).__name__}: {e}"[:200]
             continue
         dias = (a.get("deadline") or {}).get("days")
         dias = dias if isinstance(dias, (int, float)) else None
@@ -461,6 +479,8 @@ def completar_titulos(cfg: Config, aplicar: bool, limite: int = 20) -> dict:
             titulo = titulo_da_providencia(analisar_com_ia(cfg, texto, ia_http))
         except Exception as e:  # noqa: BLE001
             log.warning("título falhou em %s: %s", f["intimation_id"][:8], e)
+            resumo["falhas"] = resumo.get("falhas", 0) + 1
+            resumo["ultima_falha"] = f"{type(e).__name__}: {e}"[:200]
             continue
         if not titulo:
             continue
@@ -512,9 +532,9 @@ def gerar_resumo(cfg: Config, texto: str, cliente: httpx.Client | None = None) -
     http = cliente or httpx.Client(timeout=180)
     r = http.post("https://api.deepseek.com/chat/completions",
                   headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
-                  json={"model": cfg.deepseek_modelo, "temperature": 0.2, "max_tokens": 4000,
-                        "messages": [{"role": "system", "content": ficha_mod.PROMPT_SISTEMA},
-                                     {"role": "user", "content": texto}]})
+                  json=corpo_deepseek(cfg, [{"role": "system", "content": ficha_mod.PROMPT_SISTEMA},
+                                            {"role": "user", "content": texto}],
+                                      max_tokens=4000, temperatura=0.2))
     r.raise_for_status()
     escolha = r.json()["choices"][0]
     conteudo = ((escolha.get("message") or {}).get("content") or "").strip()
