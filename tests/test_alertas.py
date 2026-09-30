@@ -210,3 +210,21 @@ def test_audiencia_redesignada_que_ja_esta_na_agenda_em_outra_data_nao_avisa():
     # Tipo diferente na agenda (instrução) não cobre a conciliação.
     outra = [{"quando": "2026-12-01T12:00:00+00:00", "titulo": "AUDIÊNCIA DE INSTRUÇÃO - X", "status": "pendente"}]
     assert len(detectar(PROC, [], [], outra, velha, agora)) == 1
+
+
+def test_caso_manoel_impugnacao_responde_a_manifestacao_sobre_contestacao():
+    # 1034205-29.2026.4.01.3600: IMPUGNAÇÃO criada 28/09 (vista no PJe), venc. 12/10,
+    # cumprida 29/09; a intimação do DJEN chegou 29/09 com 15 dias (venc. 22/10).
+    i = {"id": "m1", "chegou_em": "2026-09-29T10:15:00+00:00", "data": "2026-09-29",
+         "vencimento": "2026-10-22T00:00:00+00:00", "prazo_dias": 15, "urgencia": "media",
+         "resumo": "Intimação da parte autora para se manifestar sobre a contestação e os documentos "
+                   "apresentados pela parte ré (CEF) no prazo de 15 dias."}
+    imp = {"title": "IMPUGNAÇÃO", "due_date": "2026-10-12T00:00:00+00:00", "status": "cumprido",
+           "created_at": "2026-09-28T14:33:42+00:00"}
+    agora = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
+    assert detectar(PROC, [i], [imp], [], None, agora) == []
+    # Réplica com outro nome também cobre.
+    rep = {**imp, "title": "RÉPLICA"}
+    assert detectar(PROC, [i], [rep], [], None, agora) == []
+    # Sem prazo nenhum, continua sendo alerta.
+    assert len(detectar(PROC, [i], [], [], None, agora)) == 1

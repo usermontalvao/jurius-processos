@@ -215,9 +215,19 @@ _TIPOS = {
 JANELA_ANTES_DIAS = 20
 
 
+# "Manifestar sobre a contestação" É a réplica/impugnação — não uma manifestação
+# qualquer. Caso Manoel (1034205-29, 30/09/2026): "IMPUGNAÇÃO" criada no PJe em
+# 28/09 e cumprida em 29/09; a intimação do DJEN chegou em 29/09 pedindo
+# "manifestar sobre a contestação" e o alerta dizia "nenhum prazo cadastrado".
+_REPLICA = re.compile(r"(?:manifest|fal)\w*\s+(?:\w+\s+){0,4}(?:sobre|acerca|quanto)\s+(?:[aà]s?\s+|d[aeo]s?\s+)?contesta", re.IGNORECASE)
+
+
 def _tipos(texto: str | None) -> set[str]:
     t = (texto or "").lower()
-    return {k for k, rx in _TIPOS.items() if re.search(rx, t)}
+    tipos = {k for k, rx in _TIPOS.items() if re.search(rx, t)}
+    if _REPLICA.search(t):
+        tipos.add("impugnacao")
+    return tipos
 
 
 def _cobre(p: dict, i: dict, venc: date, chegou: datetime) -> bool:
