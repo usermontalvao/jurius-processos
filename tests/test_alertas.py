@@ -228,3 +228,30 @@ def test_caso_manoel_impugnacao_responde_a_manifestacao_sobre_contestacao():
     assert detectar(PROC, [i], [rep], [], None, agora) == []
     # Sem prazo nenhum, continua sendo alerta.
     assert len(detectar(PROC, [i], [], [], None, agora)) == 1
+
+
+def test_caso_joanil_audiencia_antecipada_por_intimacao_posterior_nao_volta():
+    # 0000607-14.2026.5.23.0009: instrução de 03/11 (intimação de 31/08) antecipada
+    # para 30/09 (intimação de 08/09). Em 01/10 o 30/09 já passou e a agenda não
+    # cobre mais nada — o 03/11 não pode voltar como "não está na agenda".
+    designa = {"id": "j1", "chegou_em": "2026-08-31T04:00:07+00:00", "data": "2026-08-31", "vencimento": None,
+               "resumo": "Designada audiência de instrução",
+               "texto": "DESPACHO 1. Diante do requerimento de produção de provas orais, determino a inclusão do "
+                        "feito na pauta de AUDIÊNCIA DE INSTRUÇÃO no dia 03/11/2026 às 09:30 (hora local de Cuiabá)."}
+    antecipa = {"id": "j2", "chegou_em": "2026-09-08T04:00:06+00:00", "data": "2026-09-08", "vencimento": None,
+                "resumo": "Audiência de instrução antecipada",
+                "texto": "DESPACHO Tendo em vista a 2ª Semana Jurídica de 2026, impõe-se a readequação da pauta, "
+                         "razão pela qual antecipo a AUDIÊNCIA DE INSTRUÇÃO para o dia 30/09/2026 às 09:30, "
+                         "ficando mantidos os termos e cominações do despacho de ID_ 7918ed4 ."}
+    agenda = [{"quando": "2026-09-30T13:30:00+00:00", "titulo": "AUDIÊNCIA DE INSTRRUÇÃO - JOANIL", "status": "pendente"}]
+    agora = datetime(2026, 10, 1, 15, 0, tzinfo=timezone.utc)
+    assert detectar(PROC, [designa, antecipa], [], agenda, None, agora) == []
+    assert detectar(PROC, [antecipa, designa], [], [], None, agora) == []  # ordem da lista não importa
+    # Sem a intimação que antecipa, o 03/11 fora da agenda continua sendo alerta.
+    assert len(detectar(PROC, [designa], [], [], None, agora)) == 1
+    # A redesignação vale mesmo chegada há menos de 24 h.
+    recente = {**antecipa, "chegou_em": "2026-10-01T10:00:00+00:00", "data": "2026-10-01"}
+    assert detectar(PROC, [designa, recente], [], [], None, agora) == []
+    # Audiência de OUTRO tipo depois (conciliação) não derruba a instrução.
+    concilia = {**antecipa, "texto": "Designo audiência de conciliação para o dia 20/10/2026 às 10:00."}
+    assert any(a["data"] == "2026-11-03" for a in detectar(PROC, [designa, concilia], [], [], None, agora))

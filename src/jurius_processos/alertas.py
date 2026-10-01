@@ -135,20 +135,44 @@ def detectar(proc: dict, intimacoes: list[dict], prazos: list[dict], agenda: lis
     # Audiência: a de CADA intimação que designa uma (não só a mais recente da
     # análise) é conferida na AGENDA — é compromisso, não prazo (pedido do
     # usuário, caso Carlos 0000676-46). Mais a da análise (DataJud/DJEN).
-    candidatas: list[dict] = []
+    # A data que vale é a da intimação MAIS RECENTE: a que redesigna, antecipa ou
+    # adia tira a validade das anteriores. Caso Joanil (0000607-14, 01/10/2026):
+    # instrução de 03/11 (intimação de 31/08) antecipada para 30/09 (de 08/09);
+    # enquanto 30/09 estava por vir, a agenda escondia o alerta, e no dia
+    # seguinte o 03/11 voltou como "não está na agenda". A redesignação vale
+    # mesmo chegada há menos de 24 h e mesmo com a nova data já passada.
+    todas: list[dict] = []
     for i in intimacoes:
-        chegou = _dt(i.get("chegou_em"))
-        achada = audiencia_no_texto(i.get("texto")) if chegou and agora - chegou >= ESPERA else None
+        achada = audiencia_no_texto(i.get("texto"))
         if achada and achada[1]:
             dia = achada[1].date().isoformat()
-            candidatas.append({"tipo": achada[0], "data": dia, "hora": hora_da_audiencia(i.get("texto"), dia),
-                               "designada_em": (i.get("data") or "")[:10] or None, "fonte": "djen"})
+            chegou = _dt(i.get("chegou_em"))
+            todas.append({"tipo": achada[0], "data": dia, "hora": hora_da_audiencia(i.get("texto"), dia),
+                          "designada_em": (i.get("data") or "")[:10] or None, "fonte": "djen",
+                          "_ordem": ((i.get("data") or "")[:10], str(i.get("chegou_em") or "")),
+                          "_madura": chegou is not None and agora - chegou >= ESPERA})
+    candidatas = [a for a in todas if a["_madura"]]
     if audiencia and audiencia.get("data") and audiencia.get("fonte") != "agenda":
-        candidatas.append(audiencia)
+        candidatas.append({**audiencia, "_ordem": ((audiencia.get("designada_em") or "")[:10], "")})
     ja_avisadas: set[str] = set()
     for aud in candidatas:
-        _alerta_de_audiencia(proc, base, aud, agenda, hoje, ja_avisadas, out)
+        if _redesignada(aud, todas):
+            continue
+        _alerta_de_audiencia(proc, base, {k: v for k, v in aud.items() if not k.startswith("_")},
+                             agenda, hoje, ja_avisadas, out)
     return out
+
+
+def _redesignada(aud: dict, todas: list[dict]) -> bool:
+    """Uma intimação posterior marca audiência do mesmo tipo em outra data."""
+    tipo = _tipo_audiencia(_norm(aud.get("tipo")))
+    for outra in todas:
+        if outra["_ordem"] <= aud["_ordem"] or outra["data"] == aud["data"][:10]:
+            continue
+        tipo_outra = _tipo_audiencia(_norm(outra.get("tipo")))
+        if tipo_outra == tipo or "audiência" in (tipo_outra, tipo):
+            return True
+    return False
 
 
 def _alerta_de_audiencia(proc: dict, base: dict, audiencia: dict, agenda: list[dict], hoje: date,
