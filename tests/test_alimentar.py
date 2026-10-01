@@ -116,7 +116,7 @@ def test_resposta_vazia_da_ia_vira_falha_contada(cfg, monkeypatch):
                     "holidays": [], "profiles": []})
     ligar(monkeypatch, sup)
     monkeypatch.setattr(alimentar, "analisar_com_ia",
-                        lambda *a: (_ for _ in ()).throw(alimentar.RespostaVazia("finish_reason=length, 0 caracteres")))
+                        lambda *a, **k: (_ for _ in ()).throw(alimentar.RespostaVazia("finish_reason=length, 0 caracteres")))
     r = alimentar.ia(cfg, aplicar=True)
     assert r["pendentes"] == 1 and r["analisadas"] == 0 and r["falhas"] == 1
     assert "length" in r["ultima_falha"]
@@ -236,7 +236,7 @@ def test_ia_nao_avisa_em_dobro_quando_a_rotina_antiga_chegou_antes(cfg, monkeypa
                "profiles": [{"user_id": "u1"}]})
     ligar(monkeypatch, sup)
     monkeypatch.setattr(alimentar, "analisar_com_ia",
-                        lambda cfg, t, c=None: {"urgency": "alta", "deadline": {"days": 5}, "summary": "s"})
+                        lambda cfg, t, c=None, contexto=None: {"urgency": "alta", "deadline": {"days": 5}, "summary": "s"})
     r = alimentar.ia(cfg, aplicar=True)
     assert r["analisadas"] == 0 and r["avisos"] == 0
     assert not any(e[1] == "user_notifications" for e in sup.escritas)
@@ -249,7 +249,7 @@ def test_ia_grava_prazo_em_dias_uteis_e_avisa_a_equipe(cfg, monkeypatch):
                     "profiles": [{"user_id": "u1"}, {"user_id": "u2"}], "user_notifications": [], "djen_destinatarios": []})
     ligar(monkeypatch, sup)
     monkeypatch.setattr(alimentar, "analisar_com_ia",
-                        lambda cfg, t, c=None: {"urgency": "media", "deadline": {"days": 15}, "summary": "Manifestar"})
+                        lambda cfg, t, c=None, contexto=None: {"urgency": "media", "deadline": {"days": 15}, "summary": "Manifestar"})
     r = alimentar.ia(cfg, aplicar=True)
     assert r == {"pendentes": 1, "analisadas": 1, "avisos": 2, "aplicado": True}
     analise = [e for e in sup.escritas if e[1] == "intimation_ai_analysis"][0][3]
@@ -273,7 +273,7 @@ def test_ia_grava_o_titulo_do_prazo(cfg, monkeypatch):
     sup = Supabase({"djen_comunicacoes": [it], "intimation_ai_analysis": [], "holidays": [],
                     "profiles": [], "user_notifications": [], "djen_destinatarios": []})
     ligar(monkeypatch, sup)
-    monkeypatch.setattr(alimentar, "analisar_com_ia", lambda cfg, t, c=None: {
+    monkeypatch.setattr(alimentar, "analisar_com_ia", lambda cfg, t, c=None, contexto=None: {
         "urgency": "media", "deadline": {"days": 15, "action": "manifestar sobre os cálculos de liquidação"}, "summary": "s"})
     alimentar.ia(cfg, aplicar=True)
     analise = [e for e in sup.escritas if e[1] == "intimation_ai_analysis"][0][3]
@@ -305,3 +305,21 @@ def test_trecho_para_ia_mantem_o_fim_do_texto_longo():
     assert alimentar.trecho_para_ia("texto pequeno") == "texto pequeno"
     meio = "x" * 9000
     assert alimentar.trecho_para_ia(meio) == meio  # antes do corte de 3000 perdia 6000
+
+
+def test_reanalise_refaz_a_antiga_com_compromisso_e_nao_avisa_de_novo(cfg, monkeypatch):
+    it = {"id": "v1", "texto": "perícia no dia 23/11/2026, às 14h00min", "numero_processo": "10598029220268110041",
+          "numero_processo_mascara": "1059802-92", "sigla_tribunal": "TJMT", "nome_orgao": "1ª VARA ESP. DA FAZENDA PÚBLICA",
+          "data_disponibilizacao": "2026-09-30", "process_id": None, "client_id": None}
+    sup = Supabase({"djen_comunicacoes": [it], "intimation_ai_analysis": [{"intimation_id": "v1"}], "holidays": []})
+    ligar(monkeypatch, sup)
+    monkeypatch.setattr(alimentar, "analisar_com_ia", lambda cfg, t, c=None, contexto=None: {
+        "urgency": "media", "summary": "Perícia", "deadline": {"days": 15, "action": "Indicar assistente técnico e quesitos"},
+        "compromisso": {"tipo": "pericia", "data": "2026-11-23", "hora": "14:00", "modalidade": "presencial"}})
+    r = alimentar.reanalisar(cfg, aplicar=True, hoje=date(2026, 10, 1))
+    assert r["refeitas"] == 1
+    patch = [e for e in sup.escritas if e[0] == "PATCH" and e[1] == "intimation_ai_analysis"][0]
+    assert patch[2] == {"intimation_id": "eq.v1"}
+    assert patch[3]["compromisso"]["data"] == "2026-11-23" and patch[3]["analise_versao"] == 2
+    assert "created_at" not in patch[3]
+    assert not any(e[1] == "user_notifications" for e in sup.escritas)

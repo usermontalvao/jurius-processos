@@ -106,6 +106,8 @@ def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list
         entregas.append(("alimentar_ia", lambda: alimentar.ia(cfg, aplicar, process_ids=ids)))
         if alvo is None:  # completar títulos antigos é do ciclo, não do clique
             entregas.append(("alimentar_titulos", lambda: alimentar.completar_titulos(cfg, aplicar)))
+            # Análise feita por prompt antigo: refeita aos poucos (sem novo aviso).
+            entregas.append(("alimentar_reanalise", lambda: alimentar.reanalisar(cfg, aplicar)))
     # Depois da IA das intimações: o resumo usa as análises que ela acabou de gravar.
     if getattr(cfg, "alimentar_ficha", False):
         entregas.append(("alimentar_ficha", lambda: alimentar.ficha(banco, cfg, procs, aplicar, somente=alvo)))

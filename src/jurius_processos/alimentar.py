@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
 from . import cnj
+from . import analise as analise_mod
 from . import ficha as ficha_mod
 from .banco import Banco
 from .config import Config, cabecalhos_supabase
@@ -331,19 +333,8 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
 
 
 # ── 3. IA (cron 11) ─────────────────────────────────────────────────────────
-# O MESMO texto da analyze-intimations: é a calibração que o escritório já usa.
-PROMPT_SISTEMA = """Você é um assistente jurídico. Analise a intimação e retorne APENAS um JSON válido:
-{
-  "urgency": "baixa" | "media" | "alta" | "critica",
-  "deadline": { "days": número de dias para o prazo, "action": "o que o advogado precisa fazer" },
-  "summary": "resumo curto da intimação em 1-2 frases"
-}
-Critérios de urgência: critica = prazo <= 2 dias; alta = prazo <= 5 dias; media = prazo <= 15 dias; baixa = prazo > 15 dias ou sem prazo.
-"action" vira o TÍTULO do prazo no CRM: CURTO (até 50 caracteres), verbo no infinitivo + o objeto, sem número de processo, sem nome de parte, sem "no prazo de".
-Exemplos: "Apresentar contrarrazões ao recurso", "Manifestar sobre os cálculos", "Informar o endereço da reclamada", "Comparecer à audiência UNA".
-Quando for só ciência de um ato, use "Manifestar sobre <ato>", ex.: "Manifestar sobre o acórdão".
-Leia o texto INTEIRO e procure o que o juiz DETERMINA (dispositivo, geralmente no meio e no fim). Citações de doutrina e jurisprudência no começo não são ordem. Decisão que nomeia perito ou designa perícia/audiência quase sempre abre prazo: se manda as partes indicarem assistente técnico e quesitos (art. 465, §1º do CPC, 15 dias), use days 15 e action "Indicar assistente técnico e quesitos". Só diga "sem prazo" se não houver nenhuma ordem a cumprir.
-Se o texto marca perícia ou audiência, cite a data e a hora no summary."""
+# O prompt, o contexto e as salvaguardas moram em analise.py (puro, testável).
+PROMPT_SISTEMA = analise_mod.PROMPT_SISTEMA
 
 # Título que é rótulo, não providência — não serve de título de prazo.
 _TITULOS_GENERICOS = {"prazo", "intimação", "intimacao", "manifestação", "manifestacao", "ciência", "ciencia", "providência"}
@@ -405,13 +396,19 @@ def trecho_para_ia(texto: str, limite: int = LIMITE_TEXTO_IA) -> str:
     return f"{texto[:cabeca]}\n[...]\n{texto[-(limite - cabeca):]}"
 
 
-def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> dict:
+def _mensagem(texto: str, contexto: str | None) -> str:
+    if not contexto:
+        return f"Analise esta intimação:\n\n{trecho_para_ia(texto)}"
+    return f"{contexto}\n\nINTIMAÇÃO NOVA (texto integral)\n\n{trecho_para_ia(texto)}"
+
+
+def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None, contexto: str | None = None) -> dict:
     http = cliente or httpx.Client(timeout=90)
     r = http.post("https://api.deepseek.com/chat/completions",
                   headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
                   json=corpo_deepseek(cfg, [{"role": "system", "content": PROMPT_SISTEMA},
-                                            {"role": "user", "content": f"Analise esta intimação:\n\n{trecho_para_ia(texto)}"}],
-                                      max_tokens=500, temperatura=0.1, response_format={"type": "json_object"}))
+                                            {"role": "user", "content": _mensagem(texto, contexto)}],
+                                      max_tokens=1400, temperatura=0.1, response_format={"type": "json_object"}))
     r.raise_for_status()
     escolha = r.json()["choices"][0]
     conteudo = (escolha.get("message") or {}).get("content") or ""
@@ -419,6 +416,76 @@ def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None
     if not a:
         raise RespostaVazia(f"finish_reason={escolha.get('finish_reason')}, {len(conteudo)} caracteres")
     return a
+
+
+_COLUNAS_IT = ("id,texto,numero_processo,numero_processo_mascara,sigla_tribunal,nome_orgao,nome_classe,"
+               "tipo_documento,tipo_comunicacao,data_disponibilizacao,process_id,client_id")
+
+
+def _contextos(http: httpx.Client, its: list[dict]) -> dict[str, str]:
+    """O contexto de cada intimação: cliente, polos e resumo do processo, e as
+    intimações anteriores do MESMO processo com o resumo que já têm."""
+    if not its:
+        return {}
+    em = lambda xs: f"in.({','.join(sorted(xs))})"  # noqa: E731
+    cids = {x["client_id"] for x in its if x.get("client_id")}
+    pids = {x["process_id"] for x in its if x.get("process_id")}
+    clientes = {c["id"]: c.get("full_name") for c in http.get("/clients", params={"select": "id,full_name", "id": em(cids)}).json()} if cids else {}
+    fichas = {f["process_id"]: f for f in http.get("/process_insights", params={
+        "select": "process_id,polo_ativo,polo_passivo,resumo", "process_id": em(pids)}).json()} if pids else {}
+    out = {}
+    for it in its:
+        numero = it.get("numero_processo")
+        anteriores = http.get("/djen_comunicacoes", params={
+            "select": "id,data_disponibilizacao,tipo_documento,tipo_comunicacao,texto", "numero_processo": f"eq.{numero}",
+            "data_disponibilizacao": f"lte.{it.get('data_disponibilizacao')}", "id": f"neq.{it['id']}",
+            "order": "data_disponibilizacao.desc", "limit": "8"}).json() if numero else []
+        resumos = {a["intimation_id"]: a.get("summary") for a in http.get("/intimation_ai_analysis", params={
+            "select": "intimation_id,summary", "intimation_id": em({x["id"] for x in anteriores})}).json()} if anteriores else {}
+        historico = [{"data": x.get("data_disponibilizacao"), "tipo": x.get("tipo_documento") or x.get("tipo_comunicacao"),
+                      "resumo": resumos.get(x["id"]) or " ".join((x.get("texto") or "").split())[:300]} for x in anteriores]
+        f = fichas.get(it.get("process_id")) or {}
+        out[it["id"]] = analise_mod.contexto(it, clientes.get(it.get("client_id")), f, f.get("resumo"), historico)
+    return out
+
+
+def _linha_da_analise(cfg: Config, it: dict, a: dict, feriados: set[str]) -> dict:
+    """O registro de intimation_ai_analysis a partir da análise JÁ salvaguardada."""
+    prazo = a.get("deadline") or {}
+    dias = prazo.get("days") if isinstance(prazo.get("days"), (int, float)) else None
+    agora = _agora()
+    contagem = contar_prazo_da_intimacao(it.get("data_disponibilizacao") or agora, dias, feriados)
+    sessao = (a.get("compromisso") or {}).get("data") if (a.get("compromisso") or {}).get("tipo") == "julgamento" else None
+
+    def vencimento(o: dict) -> str | None:
+        if o.get("days"):
+            return (contar_prazo_da_intimacao(it.get("data_disponibilizacao") or agora, o.get("days"), feriados) or {}).get("vencimento")
+        # Sustentação oral/memoriais/destaque: "até 48 horas antes da sessão".
+        if sessao and re.search(r"sustenta|memoria|destaque", analise_mod._norm(o.get("action"))):
+            return (date.fromisoformat(sessao) - timedelta(days=2)).isoformat()
+        return None
+
+    opcoes = [{"acao": titulo_da_providencia({"deadline": o}) or o["action"], "dias": o.get("days"),
+               "fundamento": o.get("fundamento"), "vencimento": vencimento(o)}
+              for o in a.get("alternativas") or [] if o.get("action")]
+    return {"intimation_id": it["id"], "summary": a.get("summary"), "urgency": a.get("urgency") or "media",
+            "deadline_days": dias,
+            "deadline_description": titulo_da_providencia(a),
+            "deadline_due_date": f"{contagem['vencimento']}T00:00:00.000Z" if contagem else None,
+            "prazo_fundamento": prazo.get("fundamento"),
+            "prazo_opcoes": opcoes,
+            "compromisso": a.get("compromisso"),
+            "resultado": a.get("resultado"),
+            "document_type": a.get("tipo_ato"),
+            "rito": a.get("rito"),
+            "analise_versao": analise_mod.VERSAO,
+            "analyzed_at": agora, "model_used": f"deepseek/{cfg.deepseek_modelo} (cérebro v{analise_mod.VERSAO})",
+            "updated_at": agora}
+
+
+def _analisar(cfg: Config, it: dict, ctx: str | None, ia_http: httpx.Client) -> dict:
+    texto = it.get("texto") or ""
+    return analise_mod.salvaguardar(analisar_com_ia(cfg, texto, ia_http, contexto=ctx), it, texto)
 
 
 def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list[str] | None = None) -> dict:
@@ -431,8 +498,7 @@ def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list
     if process_ids is not None and not process_ids:
         return {"pendentes": 0, "analisadas": 0, "avisos": 0, "aplicado": aplicar}
     recentes = http.get("/djen_comunicacoes", params={
-        "select": "id,texto,numero_processo,numero_processo_mascara,sigla_tribunal,data_disponibilizacao,process_id",
-        "order": "data_disponibilizacao.desc", "limit": "150", **filtro}).json()
+        "select": _COLUNAS_IT, "order": "data_disponibilizacao.desc", "limit": "150", **filtro}).json()
     ids = [x["id"] for x in recentes]
     feitas = {a["intimation_id"] for a in http.get("/intimation_ai_analysis", params={
         "select": "intimation_id", "intimation_id": f"in.({','.join(ids)})"}).json()} if ids else set()
@@ -443,32 +509,75 @@ def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list
 
     feriados = {str(h["date"])[:10] for h in _tudo(http, "holidays", "date")}
     usuarios = [u["user_id"] for u in _tudo(http, "profiles", "user_id", {"is_active": "eq.true"}) if u.get("user_id")]
+    contextos = _contextos_seguros(http, pendentes)
     ia_http = httpx.Client(timeout=90)
     for it in pendentes:
         try:
-            a = analisar_com_ia(cfg, it.get("texto") or "", ia_http)
+            a = _analisar(cfg, it, contextos.get(it["id"]), ia_http)
         except Exception as e:  # noqa: BLE001 — uma intimação não derruba as outras
             log.warning("IA falhou em %s: %s", it["id"][:8], e)
             resumo["falhas"] = resumo.get("falhas", 0) + 1
             resumo["ultima_falha"] = f"{type(e).__name__}: {e}"[:200]
             continue
-        dias = (a.get("deadline") or {}).get("days")
-        dias = dias if isinstance(dias, (int, float)) else None
-        agora = _agora()
-        contagem = contar_prazo_da_intimacao(it.get("data_disponibilizacao") or agora, dias, feriados)
+        linha = {**_linha_da_analise(cfg, it, a, feriados), "created_at": _agora()}
         r = http.post("/intimation_ai_analysis", params={"on_conflict": "intimation_id"},
-                      headers={"Prefer": "resolution=ignore-duplicates,return=representation"}, json={
-            "intimation_id": it["id"], "summary": a.get("summary"), "urgency": a.get("urgency"),
-            "deadline_days": dias,
-            "deadline_description": titulo_da_providencia(a),
-            "deadline_due_date": f"{contagem['vencimento']}T00:00:00.000Z" if contagem else None,
-            "analyzed_at": agora, "model_used": f"deepseek/{cfg.deepseek_modelo} (cérebro)",
-            "created_at": agora, "updated_at": agora})
+                      headers={"Prefer": "resolution=ignore-duplicates,return=representation"}, json=linha)
         r.raise_for_status()
         if not r.json():
             continue  # a rotina antiga chegou antes: nada de aviso em dobro
         resumo["analisadas"] += 1
         resumo["avisos"] += _avisar_equipe(http, usuarios, it, a)
+    return resumo
+
+
+def _contextos_seguros(http: httpx.Client, its: list[dict]) -> dict[str, str]:
+    """Sem contexto a análise ainda sai (pior, mas sai): falha aqui não para a fila."""
+    try:
+        return _contextos(http, its)
+    except Exception as e:  # noqa: BLE001
+        log.warning("contexto das intimações falhou: %s", e)
+        return {}
+
+
+REANALISE_JANELA_DIAS = 30
+
+
+def reanalisar(cfg: Config, aplicar: bool, limite: int = 15, hoje: date | None = None) -> dict:
+    """As intimações dos últimos 30 dias analisadas por um prompt antigo são
+    refeitas com o atual (sem novo aviso à equipe). É o que faz a perícia do
+    Vicente virar compromisso e a sentença do Pedro virar recurso inominado
+    sem ninguém clicar em nada depois do deploy."""
+    if not cfg.deepseek_key:
+        return {"pulado": "sem DEEPSEEK_API_KEY"}
+    http = _cliente(cfg)
+    desde = ((hoje or date.today()) - timedelta(days=REANALISE_JANELA_DIAS)).isoformat()
+    recentes = http.get("/djen_comunicacoes", params={
+        "select": _COLUNAS_IT, "data_disponibilizacao": f"gte.{desde}",
+        "order": "data_disponibilizacao.desc", "limit": "300"}).json()
+    ids = [x["id"] for x in recentes]
+    velhas = {a["intimation_id"] for a in http.get("/intimation_ai_analysis", params={
+        "select": "intimation_id", "intimation_id": f"in.({','.join(ids)})",
+        "or": f"(analise_versao.is.null,analise_versao.lt.{analise_mod.VERSAO})"}).json()} if ids else set()
+    alvo = [x for x in recentes if x["id"] in velhas][:limite]
+    resumo = {"desatualizadas": len(velhas), "refeitas": 0, "aplicado": aplicar}
+    if not aplicar or not alvo:
+        return resumo
+    feriados = {str(h["date"])[:10] for h in _tudo(http, "holidays", "date")}
+    contextos = _contextos_seguros(http, alvo)
+    ia_http = httpx.Client(timeout=90)
+    for it in alvo:
+        try:
+            a = _analisar(cfg, it, contextos.get(it["id"]), ia_http)
+        except Exception as e:  # noqa: BLE001
+            log.warning("reanálise falhou em %s: %s", it["id"][:8], e)
+            resumo["falhas"] = resumo.get("falhas", 0) + 1
+            resumo["ultima_falha"] = f"{type(e).__name__}: {e}"[:200]
+            continue
+        linha = _linha_da_analise(cfg, it, a, feriados)
+        linha.pop("intimation_id")
+        http.patch("/intimation_ai_analysis", params={"intimation_id": f"eq.{it['id']}"},
+                   json=linha).raise_for_status()
+        resumo["refeitas"] += 1
     return resumo
 
 
