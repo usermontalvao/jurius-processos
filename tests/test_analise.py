@@ -144,3 +144,34 @@ def test_contexto_le_os_polos_do_cabecalho_quando_a_ficha_nao_tem():
     it = {**PEDRO, "texto": "SENTENÇA Processo: 1038323-66.2026.8.11.0001. AUTOR: RAIANE MARQUES DE JESUS REU: PEDRO RODRIGUES MONTALVAO NETO Vistos. Trata-se"}
     ctx = analise.contexto(it, "PEDRO RODRIGUES MONTALVAO NETO", None, None, [])
     assert "POLO PASSIVO" in ctx and "RAIANE" in ctx
+
+
+def test_tutela_vicente_postergada_mesmo_com_concedo_da_gratuidade_e_doutrina():
+    texto = ("Sobre a concessão da tutela de urgência, ensina a doutrina: A decisão que concede tutela provisória é baseada "
+             "em cognição sumária. Portanto, postergo a apreciação do pedido de tutela de urgência para após a produção da "
+             "prova pericial. RECEBO a inicial. CONCEDO os benefícios da justiça gratuita.")
+    assert analise.tutela_no_texto(texto) == "postergada"
+    assert analise.conferir_tutela("concedida", texto) == "postergada"
+
+
+def test_tutela_pelo_verbo_do_juiz():
+    t = analise.tutela_no_texto
+    assert t("Ausentes os requisitos, INDEFIRO a tutela de urgência.") == "negada"
+    assert t("Não defiro, por ora, a liminar pleiteada.") == "negada"
+    assert t("Presentes os requisitos, DEFIRO a tutela de urgência para determinar o restabelecimento.") == "concedida"
+    assert t("DEFIRO PARCIALMENTE a tutela de urgência para suspender os atos expropriatórios.") == "concedida_em_parte"
+    assert t("Revogo a liminar anteriormente concedida.") == "revogada"
+    assert t("A parte requereu tutela de urgência. Cite-se.") is None
+    # várias menções: vale a última (dispositivo)
+    assert t("A tutela foi indeferida pelo juízo de origem. Reconsidero e DEFIRO a tutela de urgência.") == "concedida"
+
+
+def test_conferir_tutela_sem_verbo_no_texto_vale_a_ia():
+    assert analise.conferir_tutela("concedida", "Tutela deferida.") == "concedida"
+    assert analise.conferir_tutela("inventada", "Cite-se.") is None
+    assert analise.conferir_tutela("concedida_em_parte", "DEFIRO a tutela.") == "concedida_em_parte"
+
+
+def test_seguranca_concedida_confirmando_a_liminar_e_liminar_mantida():
+    assert analise.tutela_no_texto("Ante o exposto, CONCEDO A SEGURANÇA, confirmando a liminar, e extingo o processo.") == "mantida"
+    assert analise.tutela_no_texto("Concedo a segurança para ratificar a decisão liminar.") == "mantida"

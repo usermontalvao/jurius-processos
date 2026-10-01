@@ -28,7 +28,7 @@ import re
 import unicodedata
 from datetime import date
 
-VERSAO = 2  # intimation_ai_analysis.analise_versao — as de versão menor são refeitas
+VERSAO = 3  # intimation_ai_analysis.analise_versao — as de versão menor são refeitas
 
 
 def _sem_acento(s: str) -> str:
@@ -179,6 +179,7 @@ PROMPT_SISTEMA = """Você é o advogado sênior de um escritório que atua em pr
   "summary": "1-2 frases: o que o juiz decidiu/determinou e o que isso significa para o NOSSO cliente",
   "tipo_ato": "sentenca" | "acordao" | "decisao" | "despacho" | "ato_ordinatorio" | "pauta_julgamento" | "designacao_audiencia" | "designacao_pericia" | "outro",
   "resultado": "favoravel" | "desfavoravel" | "parcial" | "neutro",
+  "tutela": "concedida" | "concedida_em_parte" | "negada" | "revogada" | "mantida" | "postergada" | "nao_ha",
   "urgency": "baixa" | "media" | "alta" | "critica",
   "deadline": { "days": dias úteis ou null, "action": "o que o advogado precisa fazer", "fundamento": "artigo de lei ou 'fixado pelo juiz'" } ou null,
   "alternativas": [ { "action": "...", "days": n, "fundamento": "..." } ],
@@ -206,7 +207,8 @@ REGRAS
 7. "action" vira o TÍTULO do prazo no CRM: CURTO (até 50 caracteres), verbo no infinitivo + objeto, sem número de processo, sem nome de parte. Ex.: "Interpor recurso inominado", "Opor embargos de declaração", "Indicar assistente técnico e quesitos", "Apresentar contrarrazões ao recurso ordinário".
 8. Leia o texto INTEIRO: o que vale é o dispositivo (meio e fim). Citação de doutrina não é ordem.
 9. Urgência pelo prazo: critica <= 2 dias; alta <= 5; media <= 15; baixa > 15 ou sem prazo. Audiência/perícia em menos de 10 dias = alta.
-10. Use o histórico só para entender o processo; a análise é da intimação NOVA."""
+10. Use o histórico só para entender o processo; a análise é da intimação NOVA.
+11. "tutela" é o que ESTA decisão fez com o pedido de tutela/liminar — pelo verbo do JUIZ ("defiro", "indefiro", "postergo a apreciação", "revogo", "mantenho"). Doutrina e jurisprudência citadas não são decisão. "Concedo a justiça gratuita" NÃO é tutela. Análise adiada para depois da perícia/contestação = "postergada" (nunca "negada" nem "concedida"). Sem pedido de tutela decidido aqui = "nao_ha". No summary, diga exatamente isso (ex.: "adiou a análise da tutela"), nunca "concedeu a tutela" se ela foi adiada."""
 
 
 _EMPRESA = re.compile(r"\b(s\.?\s?a\.?|ltda|eireli|me|epp|banco|bank|instituto nacional|inss|uniao|estado de|municipio|"
@@ -291,6 +293,60 @@ def contexto(it: dict, cliente: str | None, polos: dict | None, resumo_processo:
 
 
 # ── 4. SALVAGUARDAS ─────────────────────────────────────────────────────────
+TUTELAS = {"concedida", "concedida_em_parte", "negada", "revogada", "mantida", "postergada", "nao_ha"}
+
+# O verbo do JUIZ, em primeira pessoa: é o dispositivo. A doutrina citada no
+# meio da decisão fala na terceira ("a decisão que concede tutela...") e não
+# decide nada. Ordem importa: "não defiro" antes de "defiro", "em parte" antes
+# do inteiro.
+_TUTELA_NO_TEXTO = [
+    ("postergada", r"\b(postergo|difiro|reservo-me|relego|deixo para (apreciar|analisar)|apreciarei|analisarei|"
+                   r"sera (apreciad|analisad)[oa] (apos|oportunamente|por ocasiao|depois))"),
+    ("negada", r"\b(nao (defiro|concedo|vislumbro|verifico)|indefiro|nego|denego|rejeito)\b"),
+    ("revogada", r"\b(revogo|casso|torno sem efeito)\b"),
+    # "concedo a segurança, confirmando a liminar": o "concedo" é da segurança.
+    ("mantida", r"\b(mantenho|ratific(o|ar|ando)|confirm(o|ar|ando))\b"),
+    ("concedida_em_parte", r"\b(defiro|concedo)\b[^.;]{0,40}\b(parcialmente|em parte)\b"),
+    ("concedida", r"\b(defiro|concedo|antecipo)\b"),
+]
+_REMEDIO = re.compile(r"\b(tutela|liminar|antecipacao dos efeitos)")
+
+
+def tutela_no_texto(texto: str) -> str | None:
+    """O que o juiz decidiu sobre a tutela, pelo verbo dele na MESMA oração da
+    tutela. Havendo mais de uma, vale a última (o dispositivo fica no fim).
+    Caso Vicente (1059802-92): "postergo a apreciação do pedido de tutela" e,
+    na frase seguinte, "CONCEDO" a justiça gratuita — virou "tutela concedida"."""
+    achado = None
+    for frase in re.split(r"[.;!?]+", _norm(texto)):
+        if not _REMEDIO.search(frase):
+            continue
+        oracoes = re.split(r",|\bmas\b|\bporem\b", frase)
+        for i, oracao in enumerate(oracoes):
+            if not _REMEDIO.search(oracao):
+                continue
+            # A própria oração primeiro; sem verbo nela ("Não defiro, por ora,
+            # a liminar"), até duas orações antes.
+            for trecho in (oracao, " ".join(oracoes[max(0, i - 1):i + 1]), " ".join(oracoes[max(0, i - 2):i + 1])):
+                tipo = next((t for t, verbo in _TUTELA_NO_TEXTO if re.search(verbo, trecho)), None)
+                if tipo:
+                    achado = tipo
+                    break
+    return achado
+
+
+def conferir_tutela(da_ia, texto: str) -> str | None:
+    """A palavra do juiz vence a da IA; sem verbo do juiz na oração da tutela,
+    vale a IA (participio, "Tutela deferida.", a regra não lê)."""
+    ia = da_ia if da_ia in TUTELAS else None
+    lido = tutela_no_texto(texto)
+    if lido is None:
+        return ia
+    if ia in {"concedida", "concedida_em_parte"} and lido in {"concedida", "concedida_em_parte"}:
+        return ia
+    return lido
+
+
 _MESES = {m: i for i, m in enumerate(["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto",
                                       "setembro", "outubro", "novembro", "dezembro"], 1)}
 
@@ -460,5 +516,6 @@ def salvaguardar(a: dict, it: dict, texto: str) -> dict:
     a["deadline"] = principal if principal and (principal.get("action") or principal.get("days")) else None
     a["alternativas"] = unicas[:3]
     a["compromisso"] = conferir_compromisso(a.get("compromisso"), texto, it.get("data_disponibilizacao"))
+    a["tutela"] = conferir_tutela(a.get("tutela"), texto)
     a["rito"] = r
     return a

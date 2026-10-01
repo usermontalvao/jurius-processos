@@ -320,6 +320,6 @@ def test_reanalise_refaz_a_antiga_com_compromisso_e_nao_avisa_de_novo(cfg, monke
     assert r["refeitas"] == 1
     patch = [e for e in sup.escritas if e[0] == "PATCH" and e[1] == "intimation_ai_analysis"][0]
     assert patch[2] == {"intimation_id": "eq.v1"}
-    assert patch[3]["compromisso"]["data"] == "2026-11-23" and patch[3]["analise_versao"] == 2
+    assert patch[3]["compromisso"]["data"] == "2026-11-23" and patch[3]["analise_versao"] == alimentar.analise_mod.VERSAO
     assert "created_at" not in patch[3]
     assert not any(e[1] == "user_notifications" for e in sup.escritas)

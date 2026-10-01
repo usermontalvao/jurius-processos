@@ -476,6 +476,7 @@ def _linha_da_analise(cfg: Config, it: dict, a: dict, feriados: set[str]) -> dic
             "prazo_opcoes": opcoes,
             "compromisso": a.get("compromisso"),
             "resultado": a.get("resultado"),
+            "tutela": a.get("tutela"),
             "document_type": a.get("tipo_ato"),
             "rito": a.get("rito"),
             "analise_versao": analise_mod.VERSAO,
