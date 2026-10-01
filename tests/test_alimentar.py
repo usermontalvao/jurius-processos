@@ -295,3 +295,13 @@ def test_rodizio_ativos_sempre_arquivados_uma_vez_por_dia():
             vistos[n] = vistos.get(n, 0) + 1
     assert all(vistos.get(n) == 1 for n in arquivados), "cada arquivado exatamente 1× por dia"
     assert etapas.rodizio(todos, arq, 5) == etapas.rodizio(todos, arq, 5 + etapas.FATIAS_ARQUIVADOS), "estável entre dias e reinícios"
+
+
+def test_trecho_para_ia_mantem_o_fim_do_texto_longo():
+    texto = "A" * 5000 + "ORDEM-NO-MEIO" + "B" * 20000 + "INTIME-SE"
+    curto = alimentar.trecho_para_ia(texto)
+    assert len(curto) <= alimentar.LIMITE_TEXTO_IA + 10
+    assert curto.endswith("INTIME-SE")
+    assert alimentar.trecho_para_ia("texto pequeno") == "texto pequeno"
+    meio = "x" * 9000
+    assert alimentar.trecho_para_ia(meio) == meio  # antes do corte de 3000 perdia 6000

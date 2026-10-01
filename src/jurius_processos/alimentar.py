@@ -341,7 +341,9 @@ PROMPT_SISTEMA = """Você é um assistente jurídico. Analise a intimação e re
 Critérios de urgência: critica = prazo <= 2 dias; alta = prazo <= 5 dias; media = prazo <= 15 dias; baixa = prazo > 15 dias ou sem prazo.
 "action" vira o TÍTULO do prazo no CRM: CURTO (até 50 caracteres), verbo no infinitivo + o objeto, sem número de processo, sem nome de parte, sem "no prazo de".
 Exemplos: "Apresentar contrarrazões ao recurso", "Manifestar sobre os cálculos", "Informar o endereço da reclamada", "Comparecer à audiência UNA".
-Quando for só ciência de um ato, use "Manifestar sobre <ato>", ex.: "Manifestar sobre o acórdão"."""
+Quando for só ciência de um ato, use "Manifestar sobre <ato>", ex.: "Manifestar sobre o acórdão".
+Leia o texto INTEIRO e procure o que o juiz DETERMINA (dispositivo, geralmente no meio e no fim). Citações de doutrina e jurisprudência no começo não são ordem. Decisão que nomeia perito ou designa perícia/audiência quase sempre abre prazo: se manda as partes indicarem assistente técnico e quesitos (art. 465, §1º do CPC, 15 dias), use days 15 e action "Indicar assistente técnico e quesitos". Só diga "sem prazo" se não houver nenhuma ordem a cumprir.
+Se o texto marca perícia ou audiência, cite a data e a hora no summary."""
 
 # Título que é rótulo, não providência — não serve de título de prazo.
 _TITULOS_GENERICOS = {"prazo", "intimação", "intimacao", "manifestação", "manifestacao", "ciência", "ciencia", "providência"}
@@ -387,12 +389,28 @@ class RespostaVazia(Exception):
     """A IA respondeu sem conteúdo aproveitável (vazio, cortado ou sem JSON)."""
 
 
+LIMITE_TEXTO_IA = 12000
+
+
+def trecho_para_ia(texto: str, limite: int = LIMITE_TEXTO_IA) -> str:
+    """O texto que a IA lê. Até 28/09/2026 eram os 3000 primeiros caracteres, e a
+    decisão de perícia do Vicente (1059802-92) tem a ordem e os 15 dias depois da
+    doutrina do começo: virou "sem prazo". Agora vai o texto todo; passando do
+    limite, cortam-se as pontas de modo a manter o começo e o FIM, onde fica o
+    dispositivo."""
+    texto = texto or ""
+    if len(texto) <= limite:
+        return texto
+    cabeca = limite // 4
+    return f"{texto[:cabeca]}\n[...]\n{texto[-(limite - cabeca):]}"
+
+
 def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None) -> dict:
     http = cliente or httpx.Client(timeout=90)
     r = http.post("https://api.deepseek.com/chat/completions",
                   headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
                   json=corpo_deepseek(cfg, [{"role": "system", "content": PROMPT_SISTEMA},
-                                            {"role": "user", "content": f"Analise esta intimação:\n\n{(texto or '')[:3000]}"}],
+                                            {"role": "user", "content": f"Analise esta intimação:\n\n{trecho_para_ia(texto)}"}],
                                       max_tokens=500, temperatura=0.1, response_format={"type": "json_object"}))
     r.raise_for_status()
     escolha = r.json()["choices"][0]
