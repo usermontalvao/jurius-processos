@@ -78,13 +78,76 @@ _ACAO_PROPRIA = re.compile(r"contrarraz|contraminuta|c[áa]lculo|recurso|embargo
                            r"comprov|\bpagar\b|agendament|dila[çc][ãa]o|especific|apresent", re.IGNORECASE)
 
 
+# Menção NEGADA de um ato não é providência: "declarou preclusos eventuais
+# embargos", "sem interposição de recurso". Caso Igor (1035374-69, 01/10/2026):
+# a palavra "embargos" desse trecho fazia a sentença de extinção virar prazo.
+_NEGADO = re.compile(
+    r"preclus\w*\s+(?:\w+\s+){0,2}(?:embargos|recursos?|impugna\w*)"
+    r"|sem\s+(?:a\s+)?(?:interposi\w+\s+de\s+|oposi\w+\s+de\s+)?(?:recursos?|embargos|impugna\w*)"
+    r"|(?:embargos|recursos?)\s+(?:n[ãa]o\s+)?(?:foram\s+|foi\s+)?(?:opostos|interpostos?)\s+no\s+prazo",
+    re.IGNORECASE)
+# Encerramento FAVORÁVEL: a execução acabou porque o devedor pagou tudo. Não há
+# prazo nosso — o levantamento sai por alvará e o processo vai ao arquivo.
+_ENCERRAMENTO_PAGO = re.compile(
+    r"(?:extint\w*|extin[çc][ãa]o)\b.{0,80}?(?:cumprimento\s+integral|satisfa[çc][ãa]o|pagamento\s+integral|quita[çc][ãa]o)"
+    r"|(?:cumprimento\s+integral|satisfa[çc][ãa]o\s+(?:integral\s+)?da\s+obriga[çc][ãa]o|obriga[çc][ãa]o\s+(?:foi\s+)?integralmente\s+cumprida)"
+    r".{0,120}?(?:extint\w*|extin[çc][ãa]o|arquiv)",
+    re.IGNORECASE | re.DOTALL)
+# Intimação sobre DINHEIRO do processo: se já há lançamento no Financeiro, quem
+# cuida dela é o Financeiro (pedido do usuário, caso Igor).
+_SOBRE_DINHEIRO = re.compile(
+    r"alvar[áa]|levantament|dep[óo]sito|\bpagamento|\bpago\b|cumprimento\s+integral|extin[çc][ãa]o|extint|quita[çc]|"
+    r"satisfa[çc][ãa]o|valores?\s+(?:depositad|bloquead)|transfer[êe]ncia\s+de\s+valores|rpv|precat[óo]rio",
+    re.IGNORECASE)
+
+
 def pede_providencia(resumo: str | None) -> bool:
-    t = resumo or ""
+    t = _NEGADO.sub(" ", resumo or "")
+    if _ENCERRAMENTO_PAGO.search(t):
+        return False
     if _AUDIENCIA.search(t) and not _ACAO_FORTE.search(t):
         return False
     if _CIENCIA.search(t) and not _ACAO_PROPRIA.search(t):
         return False
     return bool(_ACAO.search(t)) and not _SEM_ACAO.search(t)
+
+
+def _cortar(texto: str, limite: int) -> str:
+    """Corta em palavra inteira, com reticências — "…declarou preclusos" no
+    meio da frase era o título do alerta."""
+    t = " ".join((texto or "").split())
+    if len(t) <= limite:
+        return t
+    corte = t[:limite].rsplit(" ", 1)[0].rstrip(",.;:—-")
+    return f"{corte}…"
+
+
+# O NOME do prazo, como o escritório cadastra ("CONTRARRAZÕES", "MANIFESTAÇÃO").
+# O título do prazo pré-preenchido era o resumo inteiro da IA. A ordem importa:
+# o mais específico primeiro ("manifestar sobre a contestação" é réplica).
+_NOMES = [
+    ("impugnacao", "Impugnação à contestação"),
+    ("contrarrazoes", "Contrarrazões"),
+    ("embargos", "Embargos"),
+    ("calculos", "Cálculos"),
+    ("emenda", "Emenda à inicial"),
+    ("pericia", "Perícia"),
+    ("endereco", "Informar endereço"),
+    ("pagamento", "Pagamento / custas"),
+]
+
+
+def titulo_do_prazo(resumo: str | None) -> str | None:
+    t = _NEGADO.sub(" ", resumo or "")
+    tipos = _tipos(t)
+    for chave, nome in _NOMES:
+        if chave in tipos:
+            return nome
+    if re.search(r"\brecurso\b|apela|agravo", t, re.IGNORECASE) and re.search(r"interpor|recorrer|prazo\s+(?:para|de)\s+recurso", t, re.IGNORECASE):
+        return "Recurso"
+    if "manifestacao" in tipos or re.search(r"manifest", t, re.IGNORECASE):
+        return "Manifestação"
+    return None
 
 
 def _br(d: date) -> str:
@@ -96,10 +159,12 @@ def _prioridade(urgencia: str | None) -> str:
 
 
 def detectar(proc: dict, intimacoes: list[dict], prazos: list[dict], agenda: list[dict],
-             audiencia: dict | None, agora: datetime) -> list[dict]:
+             audiencia: dict | None, agora: datetime, financeiro: list[dict] | None = None) -> list[dict]:
     """proc: {id, client_id, codigo, cliente}. intimacoes: {id, chegou_em, data,
     vencimento, prazo_dias, resumo, urgencia}. prazos: {due_date, status,
-    created_at}. agenda: audiências {quando, status}. audiencia: a da análise."""
+    created_at}. agenda: audiências {quando, status}. audiencia: a da análise.
+    financeiro: lançamentos (agreements) do processo {status, created_at}."""
+    tem_lancamento = any((f.get("status") or "") != "cancelado" for f in (financeiro or []))
     hoje = (agora + CUIABA).date()
     base = {"process_id": proc["id"], "client_id": proc.get("client_id"),
             "process_code": proc.get("codigo"), "client_name": proc.get("cliente")}
@@ -113,6 +178,8 @@ def detectar(proc: dict, intimacoes: list[dict], prazos: list[dict], agenda: lis
             continue
         if not pede_providencia(i.get("resumo")):
             continue
+        if tem_lancamento and _SOBRE_DINHEIRO.search(i.get("resumo") or ""):
+            continue
         # A mesma intimação publicada duas vezes (ou duas do mesmo ato): um alerta
         # por processo e vencimento.
         if venc.isoformat() in vistos:
@@ -122,13 +189,15 @@ def detectar(proc: dict, intimacoes: list[dict], prazos: list[dict], agenda: lis
         if coberto:
             continue
         resumo = (i.get("resumo") or "Intimação").strip()
-        titulo = f"Prazo: {resumo[:90]}"
+        nome_do_prazo = titulo_do_prazo(resumo)
+        titulo = f"Prazo: {nome_do_prazo}" if nome_do_prazo else f"Prazo: {_cortar(resumo, 90)}"
         out.append({
             "chave": f"prazo:{proc['id']}:{venc.isoformat()}", "tipo": "prazo", "intimation_id": i["id"], **_ids(base),
             "titulo": titulo, "data": venc.isoformat(), "hora": None,
             "descricao": f"Intimação de {_br(_dia(i.get('data')) or venc)} com prazo de "
                          f"{i.get('prazo_dias') or '?'} dia(s), vence em {_br(venc)}. Nenhum prazo cadastrado no processo.",
-            "dados": {**base, "title": resumo[:120], "due_date": venc.isoformat(), "priority": _prioridade(i.get("urgencia")),
+            "dados": {**base, "title": (nome_do_prazo or _cortar(resumo, 120)).upper(), "due_date": venc.isoformat(),
+                      "priority": _prioridade(i.get("urgencia")),
                       "description": f"Intimação de {_br(_dia(i.get('data')) or venc)}: {resumo}"},
         })
 

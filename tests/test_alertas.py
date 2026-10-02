@@ -17,7 +17,11 @@ def test_prazo_sem_cadastro_depois_de_24h_vira_alerta_ja_preenchido():
     [a] = detectar(PROC, [intim()], [], [], None, AGORA)
     assert a["tipo"] == "prazo" and a["chave"] == "prazo:p1:2026-10-08" and a["data"] == "2026-10-08"
     assert a["dados"]["due_date"] == "2026-10-08" and a["dados"]["process_id"] == "p1"
-    assert a["dados"]["title"] == "Intimação para manifestar sobre a contestação" and a["dados"]["client_name"] == "HIAGO"
+    # O prazo nasce com o NOME da providência (manifestar sobre a contestação é a
+    # réplica), não com o resumo inteiro da IA; o resumo vai na descrição.
+    assert a["dados"]["title"] == "IMPUGNAÇÃO À CONTESTAÇÃO" and a["dados"]["client_name"] == "HIAGO"
+    assert a["titulo"] == "Prazo: Impugnação à contestação"
+    assert "manifestar sobre a contestação" in a["dados"]["description"]
 
 
 def test_antes_de_24h_nao_avisa():
@@ -255,3 +259,47 @@ def test_caso_joanil_audiencia_antecipada_por_intimacao_posterior_nao_volta():
     # Audiência de OUTRO tipo depois (conciliação) não derruba a instrução.
     concilia = {**antecipa, "texto": "Designo audiência de conciliação para o dia 20/10/2026 às 10:00."}
     assert any(a["data"] == "2026-11-03" for a in detectar(PROC, [designa, concilia], [], [], None, agora))
+
+
+# Caso Igor (1035374-69.2026.8.11.0001, 01/10/2026): sentença que extingue a
+# execução por cumprimento integral, com alvará a favor do cliente e o
+# lançamento já baixado no Financeiro. O "declarou preclusos eventuais
+# embargos" fazia a regra ler "embargos" como providência nossa.
+RESUMO_IGOR = ("O juiz julgou extinta a execução por cumprimento integral da obrigação, declarou preclusos "
+               "eventuais embargos do Banco Bradesco e determinou a expedição de alvará eletrônico em favor do "
+               "exequente, com trânsito em julgado imediato e arquivamento. Para o nosso cliente, é vitória total: "
+               "o valor depositado (R$ 4.077,02) será levantado por meio do alvará expedido.")
+
+
+def test_extincao_por_cumprimento_integral_nao_e_prazo_nosso():
+    i = {**intim(), "resumo": RESUMO_IGOR}
+    assert detectar(PROC, [i], [], [], None, AGORA) == []
+
+
+def test_mencao_negada_de_embargos_ou_recurso_nao_e_providencia():
+    from jurius_processos.alertas import pede_providencia
+    assert not pede_providencia("Declarou preclusos eventuais embargos e determinou o arquivamento.")
+    assert not pede_providencia("Certificou o trânsito em julgado sem interposição de recurso; arquivem-se.")
+    # Mas a providência de verdade continua valendo.
+    assert pede_providencia("Intimação para apresentar contrarrazões ao recurso no prazo de 8 dias.")
+    assert pede_providencia("Prazo de 5 dias para opor embargos de declaração.")
+
+
+def test_lancamento_no_financeiro_cala_alerta_de_pagamento_alvara_ou_extincao():
+    fin = [{"status": "concluido", "created_at": "2026-09-22T17:50:15+00:00"}]
+    pagamento = {**intim(), "resumo": "Intimação para manifestar sobre o depósito judicial e requerer a expedição de alvará."}
+    assert len(detectar(PROC, [pagamento], [], [], None, AGORA)) == 1
+    assert detectar(PROC, [pagamento], [], [], None, AGORA, financeiro=fin) == []
+    # Lançamento cancelado não conta; e intimação que não é de dinheiro segue avisando.
+    assert len(detectar(PROC, [pagamento], [], [], None, AGORA, financeiro=[{**fin[0], "status": "cancelado"}])) == 1
+    assert len(detectar(PROC, [intim()], [], [], None, AGORA, financeiro=fin)) == 1
+
+
+def test_titulo_do_prazo_e_corte_em_palavra_inteira():
+    from jurius_processos.alertas import _cortar, titulo_do_prazo
+    assert titulo_do_prazo("Intimação para apresentar contrarrazões ao recurso inominado") == "Contrarrazões"
+    assert titulo_do_prazo("Prazo de 5 dias para manifestação sobre o laudo") in ("Perícia", "Manifestação")
+    assert titulo_do_prazo("Prazo de 15 dias para interpor recurso da sentença") == "Recurso"
+    assert titulo_do_prazo("Despacho de mero expediente") is None
+    assert _cortar("O juiz julgou extinta a execução por cumprimento integral da obrigação, declarou preclusos eventuais", 90) \
+        == "O juiz julgou extinta a execução por cumprimento integral da obrigação, declarou…"

@@ -175,7 +175,7 @@ class CRM:
         out: dict[str, dict] = {}
         for p in self._tudo("processes", "id,practice_area,notes,court"):
             out[p["id"]] = {"area": p.get("practice_area"), "notas": p.get("notes"), "intimacoes": [], "prazos": [],
-                            "vara": p.get("court")}
+                            "vara": p.get("court"), "financeiro": []}
         for i in self._tudo("djen_comunicacoes",
                             "id,process_id,data_disponibilizacao,tipo_documento,texto,created_at,"
                             "intimation_ai_analysis(summary,deadline_days,deadline_due_date,urgency)",
@@ -188,6 +188,12 @@ class CRM:
                     "texto": i.get("texto"), "resumo": a.get("summary"), "prazo_dias": a.get("deadline_days"),
                     "vencimento": a.get("deadline_due_date"), "urgencia": a.get("urgency"),
                     "chegou_em": i.get("created_at")})
+        # Lançamentos do Financeiro: com um deles no processo, a intimação sobre
+        # pagamento/alvará/extinção é assunto do Financeiro, não alerta de prazo
+        # (caso Igor, 01/10/2026 — ver alertas.detectar).
+        for f in self._tudo("agreements", "process_id,status,created_at", {"process_id": "not.is.null"}):
+            if f.get("process_id") in out:
+                out[f["process_id"]]["financeiro"].append(f)
         # Prazo sem processo, só com o cliente: 323 assim em 26/09/2026. Vai para
         # a chave "cliente:<id>" — o alerta de cadastro conta com ele.
         for d in self._tudo("deadlines", "process_id,client_id,title,description,due_date,status,created_at,intimation_id",

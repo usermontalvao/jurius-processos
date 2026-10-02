@@ -804,7 +804,8 @@ def alertas(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
                                   "cliente": nomes.get(proc.client_id)},
                                  d.get("intimacoes") or [],
                                  (d.get("prazos") or []) + (dados.get(f"cliente:{proc.client_id}") or {}).get("prazos", []),
-                                 agenda.get(proc.id) or [], analise.get("audiencia"), agora):
+                                 agenda.get(proc.id) or [], analise.get("audiencia"), agora,
+                                 financeiro=d.get("financeiro") or []):
             achados[a["chave"]] = a
 
     filtro = {} if somente is None else {"process_id": f"in.({','.join(p.id for p in crm_processos if p.numero in somente) or '00000000-0000-0000-0000-000000000000'})"}
