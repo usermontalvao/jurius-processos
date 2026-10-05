@@ -27,6 +27,7 @@ Dois cuidados que o histórico exige:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -325,11 +326,34 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
                       json=linhas[i:i + 200]).raise_for_status()
     # A cópia que a Linha do Tempo abre: fresca a cada ciclo, então a tela
     # nunca mais precisa buscar o DataJud ao vivo (18–53 s) ao ser aberta.
+    # Só reenvia a cópia que MUDOU: regravar ~14 kB de jsonb de cada processo a
+    # cada 2 h, quase sempre igual, era a maior fonte de escrita do banco
+    # (aviso de Disk IO do Supabase, 05/10/2026). Nas iguais, só o carimbo
+    # anda — num PATCH em lote —, que é o que a tela mostra como "cópia de".
     carimbo = _agora()
+    iguais = []
     for pid, cache in caches:
+        digital = _digital(cache)
+        if _COPIA_GRAVADA.get(pid) == digital:
+            iguais.append(pid)
+            continue
         http.patch("/processes", params={"id": f"eq.{pid}"},
                    json={"datajud_cache": cache, "datajud_synced_at": carimbo}).raise_for_status()
+        _COPIA_GRAVADA[pid] = digital
+    for i in range(0, len(iguais), 100):
+        http.patch("/processes", params={"id": f"in.({','.join(iguais[i:i + 100])})"},
+                   json={"datajud_synced_at": carimbo}).raise_for_status()
+    resumo["caches_iguais"] = len(iguais)
     return resumo
+
+
+# Impressão digital da última cópia gravada de cada processo. Vive enquanto o
+# serviço vive: depois de reiniciar, o primeiro ciclo regrava tudo uma vez.
+_COPIA_GRAVADA: dict[str, str] = {}
+
+
+def _digital(cache: dict) -> str:
+    return hashlib.sha256(json.dumps(cache, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 # ── 3. IA (cron 11) ─────────────────────────────────────────────────────────

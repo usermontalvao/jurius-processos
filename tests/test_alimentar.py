@@ -191,6 +191,28 @@ def test_nada_faltando_nao_grava_movimento(tmp_path, cfg, monkeypatch):
     assert all(not linhas for linhas, _ in _posts_mov(sup))
 
 
+def test_copia_igual_so_anda_o_carimbo(tmp_path, cfg, monkeypatch):
+    b = Banco(tmp_path / "b.sqlite3")
+    n = "5" * 20
+    _datajud(b, n)
+    monkeypatch.setattr(alimentar, "_COPIA_GRAVADA", {})
+    procs = [proc("p5", n, "c5")]
+
+    sup = Supabase({"datajud_movimentos": []})
+    ligar(monkeypatch, sup)
+    alimentar.datajud(b, cfg, procs, aplicar=True)
+    [(_, _, params, corpo, _)] = [e for e in sup.escritas if e[1] == "processes"]
+    assert params == {"id": "eq.p5"} and "datajud_cache" in corpo
+
+    # Ciclo seguinte, DataJud igual: nada de reenviar o jsonb, só o carimbo.
+    sup = Supabase({"datajud_movimentos": []})
+    ligar(monkeypatch, sup)
+    r = alimentar.datajud(b, cfg, procs, aplicar=True)
+    [(_, _, params, corpo, _)] = [e for e in sup.escritas if e[1] == "processes"]
+    assert params == {"id": "in.(p5)"} and list(corpo) == ["datajud_synced_at"]
+    assert r["caches_iguais"] == 1
+
+
 def test_atualizar_um_processo_nao_toca_os_outros(tmp_path, cfg, monkeypatch):
     b = Banco(tmp_path / "b.sqlite3")
     um, outro = "5" * 20, "6" * 20
