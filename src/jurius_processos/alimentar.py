@@ -407,7 +407,22 @@ def chamar_ia(cfg: Config, sistema: str, usuario: str, max_tokens: int,
                   json={"system": sistema, "user": usuario, "max_tokens": max_tokens,
                         "json": json_mode, "log": "jurius-processos"})
     r.raise_for_status()
-    return (r.json().get("texto") or "").strip()
+    dados = r.json()
+    # Quem de fato respondeu (anthropic/claude-haiku-5-5, deepseek/…, groq/… ou openai/…):
+    # o painel mostra e o registro da análise grava.
+    ULTIMO_USO.update(provider=dados.get("provider"), model=dados.get("model"), em=_agora())
+    return (dados.get("texto") or "").strip()
+
+
+# Quem respondeu por último à `ia-texto`. Preenchido pela própria resposta da função.
+ULTIMO_USO: dict = {"provider": None, "model": None, "em": None}
+
+
+def rotulo_ia() -> str:
+    """O provedor/modelo que respondeu por último, para gravar no registro."""
+    if not ULTIMO_USO["provider"]:
+        return "ia-texto (sem resposta ainda)"
+    return f"{ULTIMO_USO['provider']}/{ULTIMO_USO['model']}"
 
 
 class RespostaVazia(Exception):
@@ -507,7 +522,7 @@ def _linha_da_analise(cfg: Config, it: dict, a: dict, feriados: set[str]) -> dic
             "document_type": a.get("tipo_ato"),
             "rito": a.get("rito"),
             "analise_versao": analise_mod.VERSAO,
-            "analyzed_at": agora, "model_used": f"ia-texto/rapido (cérebro v{analise_mod.VERSAO})",
+            "analyzed_at": agora, "model_used": f"{rotulo_ia()} (cérebro v{analise_mod.VERSAO})",
             "updated_at": agora}
 
 
@@ -792,7 +807,7 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
             continue
         http.patch("/process_insights", params={"process_id": f"eq.{pid}"}, json={
             "resumo": texto, "resumo_gerado_em": _agora(), "resumo_assinatura": ass,
-            "resumo_modelo": "ia-texto/rapido"}).raise_for_status()
+            "resumo_modelo": rotulo_ia()}).raise_for_status()
         resumo["resumos_feitos"] += 1
     return resumo
 

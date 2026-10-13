@@ -113,6 +113,8 @@ def dados(banco: Banco, ocupado: bool) -> dict:
         "chave_supabase": _descreve_chave(),
         "alimenta": _o_que_alimenta(),
         "chave_ia": _chave_ia(),
+        # Quem respondeu por último à ia-texto (provedor e modelo reais, não o padrão).
+        "ia_ultimo": dict(__import__("jurius_processos.alimentar", fromlist=["ULTIMO_USO"]).ULTIMO_USO),
         "agendador": __import__("jurius_processos.agendador", fromlist=["ESTADO"]).ESTADO,
         # Só a falha que ainda vale: se depois dela alguma etapa terminou bem,
         # o painel não assusta com erro antigo (a carga interrompida do 1º boot).
@@ -195,7 +197,9 @@ async function carregar(){
   const ci=d.chave_ia||{};
   const corCi={ok:'var(--ok)',sem_saldo:'var(--err)',invalida:'var(--err)',ausente:'var(--err)'}[ci.estado]||'var(--acc)';
   const elCi=document.getElementById('chave-ia');
-  elCi.innerHTML='Chave da IA (DeepSeek): <b style="color:'+corCi+'">'+esc(ci.texto||'?')+'</b>'
+  const ua=d.ia_ultimo||{};
+  const ultimo=ua.provider?' · último que respondeu: <b>'+esc(ua.provider+'/'+ua.model)+'</b> às '+esc(ua.em||'?'):' · nenhuma resposta da IA ainda';
+  elCi.innerHTML='IA (ia-texto, Supabase do CRM): <b style="color:'+corCi+'">'+esc(ci.texto||'?')+'</b>'+ultimo
     +(ci.caracteres?' · '+ci.caracteres+' caracteres':'')+(ci.verificada_em?' · conferida às '+ci.verificada_em:'');
   document.getElementById('versao').textContent='versão '+(d.versao||'?')+' · chave do Supabase: '+(d.chave_supabase||'?');
   document.getElementById('estado').textContent='atualizado '+hora(new Date());
