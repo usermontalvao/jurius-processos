@@ -30,30 +30,35 @@ def test_falha_antiga_some_depois_de_um_ciclo_ok(tmp_path):
     assert dados(b, False)["ultimo_erro"] is None
 
 
-def test_estado_da_chave_da_ia_sem_expor_a_chave():
+def test_estado_da_ia_sem_expor_a_chave():
     import httpx
-    from jurius_processos.painel import estado_chave_deepseek as est
+    from types import SimpleNamespace
+    from jurius_processos.painel import estado_ia as est
 
     def resp(codigo, corpo=None):
         return lambda *a, **k: httpx.Response(codigo, json=corpo)
 
-    assert est("")["estado"] == "ausente"
-    assert est("sk-x", resp(200, {"is_available": True}))["estado"] == "ok"
-    assert est("sk-x", resp(200, {"is_available": False}))["estado"] == "sem_saldo"
-    assert est("sk-x", resp(402))["estado"] == "sem_saldo"
-    assert est("sk-x", resp(401))["estado"] == "invalida"
-    assert est("sk-x", resp(503))["estado"] == "nao_verificada"
+    com = SimpleNamespace(supabase_url="https://x.supabase.co", supabase_key="eyJsegredo")
+    sem = SimpleNamespace(supabase_url="https://x.supabase.co", supabase_key="")
+    assert est(sem)["estado"] == "ausente"
+    ok = resp(200, {"texto": "ok", "provider": "anthropic", "model": "claude-haiku-5-5"})
+    assert est(com, ok)["estado"] == "ok"
+    assert "claude-haiku-5-5" in est(com, ok)["texto"]
+    assert est(com, resp(200, {"texto": ""}))["estado"] == "nao_verificada"
+    assert est(com, resp(401))["estado"] == "invalida"
+    assert est(com, resp(502))["estado"] == "nao_verificada"
+    assert est(com, resp(503))["estado"] == "nao_verificada"
 
     def cai(*a, **k):
         raise httpx.ConnectError("x")
-    r = est("sk-segredo", cai)
-    assert r["estado"] == "nao_verificada" and "sk-segredo" not in json.dumps(r)
+    r = est(com, cai)
+    assert r["estado"] == "nao_verificada" and "eyJsegredo" not in json.dumps(r)
 
 
-def test_painel_consulta_a_deepseek_no_maximo_a_cada_10_min(tmp_path, monkeypatch):
+def test_painel_consulta_a_ia_no_maximo_a_cada_10_min(tmp_path, monkeypatch):
     from jurius_processos import painel
     chamadas = []
-    monkeypatch.setattr(painel, "estado_chave_deepseek", lambda k: chamadas.append(k) or {"estado": "ok", "texto": "ok"})
+    monkeypatch.setattr(painel, "estado_ia", lambda c: chamadas.append(c) or {"estado": "ok", "texto": "ok"})
     monkeypatch.setitem(painel._CHAVE_IA, "estado", None)
     b = Banco(tmp_path / "c.sqlite3")
     for _ in range(3):

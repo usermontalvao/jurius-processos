@@ -390,14 +390,24 @@ def _json_da_resposta(texto: str) -> dict | None:
         return None
 
 
-def corpo_deepseek(cfg: Config, mensagens: list[dict], max_tokens: int, temperatura: float, **extra) -> dict:
-    """O corpo de toda chamada à DeepSeek. `thinking` desligado SEMPRE: a
-    deepseek-flash pensa por padrão e o pensamento gasta o max_tokens — com
-    500, a resposta vinha vazia e a intimação ficava sem resumo, calada
-    (3 de 7 em 28/09/2026; títulos de prazo, 1 de 20). É o mesmo que o CRM
-    faz em supabase/functions/_shared/ai-text-ladder.ts."""
-    return {"model": cfg.deepseek_modelo, "temperature": temperatura, "max_tokens": max_tokens,
-            "thinking": {"type": "disabled"}, "messages": mensagens, **extra}
+def ia_disponivel(cfg: Config) -> bool:
+    """A IA é chamada pela função `ia-texto` do Supabase do CRM. Sem a chave de
+    serviço do projeto, não há como chamá-la."""
+    return bool(cfg.supabase_url and cfg.supabase_key)
+
+
+def chamar_ia(cfg: Config, sistema: str, usuario: str, max_tokens: int,
+              http: httpx.Client, json_mode: bool = False) -> str:
+    """Uma chamada à IA pela função `ia-texto` (Claude Haiku 5.5 no CRM; a chave
+    da Anthropic fica só no Supabase). Devolve o texto; vazio vira RespostaVazia
+    no chamador. O CRM já desliga o pensamento do modelo — o que gastava o
+    max_tokens e deixava a resposta vazia (28/09/2026)."""
+    r = http.post(f"{cfg.supabase_url}/functions/v1/ia-texto",
+                  headers={**cabecalhos_supabase(cfg.supabase_key), "Content-Type": "application/json"},
+                  json={"system": sistema, "user": usuario, "max_tokens": max_tokens,
+                        "json": json_mode, "log": "jurius-processos"})
+    r.raise_for_status()
+    return (r.json().get("texto") or "").strip()
 
 
 class RespostaVazia(Exception):
@@ -428,17 +438,10 @@ def _mensagem(texto: str, contexto: str | None) -> str:
 
 def analisar_com_ia(cfg: Config, texto: str, cliente: httpx.Client | None = None, contexto: str | None = None) -> dict:
     http = cliente or httpx.Client(timeout=90)
-    r = http.post("https://api.deepseek.com/chat/completions",
-                  headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
-                  json=corpo_deepseek(cfg, [{"role": "system", "content": PROMPT_SISTEMA},
-                                            {"role": "user", "content": _mensagem(texto, contexto)}],
-                                      max_tokens=1400, temperatura=0.1, response_format={"type": "json_object"}))
-    r.raise_for_status()
-    escolha = r.json()["choices"][0]
-    conteudo = (escolha.get("message") or {}).get("content") or ""
+    conteudo = chamar_ia(cfg, PROMPT_SISTEMA, _mensagem(texto, contexto), max_tokens=1400, http=http, json_mode=True)
     a = _json_da_resposta(conteudo)
     if not a:
-        raise RespostaVazia(f"finish_reason={escolha.get('finish_reason')}, {len(conteudo)} caracteres")
+        raise RespostaVazia(f"sem JSON, {len(conteudo)} caracteres")
     return a
 
 
@@ -504,7 +507,7 @@ def _linha_da_analise(cfg: Config, it: dict, a: dict, feriados: set[str]) -> dic
             "document_type": a.get("tipo_ato"),
             "rito": a.get("rito"),
             "analise_versao": analise_mod.VERSAO,
-            "analyzed_at": agora, "model_used": f"deepseek/{cfg.deepseek_modelo} (cérebro v{analise_mod.VERSAO})",
+            "analyzed_at": agora, "model_used": f"ia-texto/rapido (cérebro v{analise_mod.VERSAO})",
             "updated_at": agora}
 
 
@@ -516,8 +519,8 @@ def _analisar(cfg: Config, it: dict, ctx: str | None, ia_http: httpx.Client) -> 
 def ia(cfg: Config, aplicar: bool, limite: int = IA_POR_CICLO, process_ids: list[str] | None = None) -> dict:
     """process_ids: só as intimações destes processos — o "Atualizar" de UM
     processo não pode esperar a fila do escritório inteiro (40 × IA > 2 min)."""
-    if not cfg.deepseek_key:
-        return {"pulado": "sem DEEPSEEK_API_KEY"}
+    if not ia_disponivel(cfg):
+        return {"pulado": "sem SUPABASE_SERVICE_ROLE_KEY (IA)"}
     http = _cliente(cfg)
     filtro = {"process_id": f"in.({','.join(process_ids)})"} if process_ids else {}
     if process_ids is not None and not process_ids:
@@ -572,8 +575,8 @@ def reanalisar(cfg: Config, aplicar: bool, limite: int = 15, hoje: date | None =
     refeitas com o atual (sem novo aviso à equipe). É o que faz a perícia do
     Vicente virar compromisso e a sentença do Pedro virar recurso inominado
     sem ninguém clicar em nada depois do deploy."""
-    if not cfg.deepseek_key:
-        return {"pulado": "sem DEEPSEEK_API_KEY"}
+    if not ia_disponivel(cfg):
+        return {"pulado": "sem SUPABASE_SERVICE_ROLE_KEY (IA)"}
     http = _cliente(cfg)
     desde = ((hoje or date.today()) - timedelta(days=REANALISE_JANELA_DIAS)).isoformat()
     recentes = http.get("/djen_comunicacoes", params={
@@ -611,8 +614,8 @@ def completar_titulos(cfg: Config, aplicar: bool, limite: int = 20) -> dict:
     prazo (deadline_description nulo) — o CRM caía em "Prazo Intimação -
     Processo X". A cada ciclo, as mais recentes com prazo ganham o título.
     Só PREENCHE o vazio: título já gravado (ou editado) nunca é trocado."""
-    if not cfg.deepseek_key:
-        return {"pulado": "sem DEEPSEEK_API_KEY"}
+    if not ia_disponivel(cfg):
+        return {"pulado": "sem SUPABASE_SERVICE_ROLE_KEY (IA)"}
     http = _cliente(cfg)
     faltando = http.get("/intimation_ai_analysis", params={
         "select": "intimation_id", "deadline_description": "is.null", "deadline_days": "gt.0",
@@ -682,16 +685,11 @@ def gerar_resumo(cfg: Config, texto: str, cliente: httpx.Client | None = None) -
     # cortadas no meio — o modelo gasta parte do limite pensando antes de
     # escrever. Resposta que não terminou nunca é gravada.
     http = cliente or httpx.Client(timeout=180)
-    r = http.post("https://api.deepseek.com/chat/completions",
-                  headers={"Authorization": f"Bearer {cfg.deepseek_key}", "Content-Type": "application/json"},
-                  json=corpo_deepseek(cfg, [{"role": "system", "content": ficha_mod.PROMPT_SISTEMA},
-                                            {"role": "user", "content": texto}],
-                                      max_tokens=4000, temperatura=0.2))
-    r.raise_for_status()
-    escolha = r.json()["choices"][0]
-    conteudo = ((escolha.get("message") or {}).get("content") or "").strip()
-    if escolha.get("finish_reason") != "stop" or not conteudo:
-        raise ResumoIncompleto(f"finish_reason={escolha.get('finish_reason')}, {len(conteudo)} caracteres")
+    conteudo = chamar_ia(cfg, ficha_mod.PROMPT_SISTEMA, texto, max_tokens=4000, http=http)
+    # A função devolve só o texto, sem o motivo do fim: resposta vazia é o único
+    # sinal de falha aqui. Corte no meio do resumo não é detectado (ver resposta).
+    if not conteudo:
+        raise ResumoIncompleto("resposta vazia")
     return conteudo
 
 
@@ -778,8 +776,8 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
                            json={"practice_area": linha["area"]}).raise_for_status()
             areas += 1
     resumo["areas_corrigidas"] = areas
-    if not cfg.deepseek_key:
-        resumo["resumos_pulados"] = "sem DEEPSEEK_API_KEY"
+    if not ia_disponivel(cfg):
+        resumo["resumos_pulados"] = "sem SUPABASE_SERVICE_ROLE_KEY (IA)"
         return resumo
     ia_http = httpx.Client(timeout=120)
     for _, pid, e, ass in a_resumir[:limite]:
@@ -794,7 +792,7 @@ def ficha(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: set[
             continue
         http.patch("/process_insights", params={"process_id": f"eq.{pid}"}, json={
             "resumo": texto, "resumo_gerado_em": _agora(), "resumo_assinatura": ass,
-            "resumo_modelo": f"deepseek/{cfg.deepseek_modelo}"}).raise_for_status()
+            "resumo_modelo": "ia-texto/rapido"}).raise_for_status()
         resumo["resumos_feitos"] += 1
     return resumo
 

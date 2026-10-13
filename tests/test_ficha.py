@@ -108,7 +108,7 @@ def _banco(tmp_path):
 
 def test_resumo_so_e_refeito_quando_a_assinatura_muda(tmp_path, monkeypatch):
     b, procs = _banco(tmp_path)
-    cfg = SimpleNamespace(supabase_url="u", supabase_key="k", deepseek_key="d", deepseek_modelo="m")
+    cfg = SimpleNamespace(supabase_url="u", supabase_key="k")
     chamadas = []
     monkeypatch.setattr(alimentar, "gerar_resumo", lambda cfg, t, c=None: chamadas.append(t) or "Resumo.")
 
@@ -132,7 +132,7 @@ def test_resumo_so_e_refeito_quando_a_assinatura_muda(tmp_path, monkeypatch):
 
 def test_ensaio_da_ficha_nao_escreve_nem_chama_ia(tmp_path, monkeypatch):
     b, procs = _banco(tmp_path)
-    cfg = SimpleNamespace(supabase_url="u", supabase_key="k", deepseek_key="d", deepseek_modelo="m")
+    cfg = SimpleNamespace(supabase_url="u", supabase_key="k")
     monkeypatch.setattr(alimentar, "gerar_resumo", lambda *a, **k: (_ for _ in ()).throw(AssertionError("IA")))
     sup = Sup([])
     monkeypatch.setattr(alimentar, "_cliente", lambda cfg: httpx.Client(base_url="https://x", transport=httpx.MockTransport(sup)))
@@ -161,18 +161,19 @@ def test_turma_recursal_do_sistema_de_juizados_nao_e_cidade():
     assert ficha.comarca("Gabinete do Juiz 1 - 3ª Turma Recursal do Sistema de Juizados Especiais - Comarca de Cuiabá - SDCR") == "Cuiabá"
 
 
-def _resposta(conteudo, fim):
+def _resposta(conteudo):
+    """A função ia-texto falsa: devolve {"texto": ...}."""
     return httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={
-        "choices": [{"message": {"content": conteudo}, "finish_reason": fim}]})))
+        "texto": conteudo, "provider": "anthropic", "model": "claude-haiku-5-5"})))
 
 
-def test_resumo_cortado_ou_vazio_nunca_e_gravado():
+def test_resumo_vazio_nunca_e_gravado():
     import pytest
-    cfg = SimpleNamespace(deepseek_key="k", deepseek_modelo="m")
-    assert alimentar.gerar_resumo(cfg, "x", _resposta("Texto inteiro.", "stop")) == "Texto inteiro."
-    for conteudo, fim in [("A fase atual é de cumprimento, com a execução", "length"), ("", "stop"), (None, "stop")]:
+    cfg = SimpleNamespace(supabase_url="https://x.supabase.co", supabase_key="eyJ")
+    assert alimentar.gerar_resumo(cfg, "x", _resposta("Texto inteiro.")) == "Texto inteiro."
+    for conteudo in ["", "   "]:
         with pytest.raises(alimentar.ResumoIncompleto):
-            alimentar.gerar_resumo(cfg, "x", _resposta(conteudo, fim))
+            alimentar.gerar_resumo(cfg, "x", _resposta(conteudo))
 
 
 def test_mudar_a_versao_do_pedido_refaz_os_resumos(monkeypatch):

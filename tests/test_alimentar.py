@@ -92,26 +92,29 @@ def test_historico_recusado_nao_impede_as_intimacoes(tmp_path, cfg, monkeypatch)
     assert [e[3][0]["hash"] for e in sup.escritas if e[1] == "djen_comunicacoes"] == ["novo"]
 
 
-def _deepseek(conteudo, fim="stop", pedidos=None):
+def _ia(conteudo, pedidos=None):
+    """A função ia-texto do Supabase do CRM, falsa: devolve {"texto": ...}."""
     def responder(req):
         if pedidos is not None:
-            pedidos.append(json.loads(req.content))
-        return httpx.Response(200, json={"choices": [{"message": {"content": conteudo}, "finish_reason": fim}]})
+            pedidos.append((req, json.loads(req.content)))
+        return httpx.Response(200, json={"texto": conteudo, "provider": "anthropic", "model": "claude-haiku-5-5"})
     return httpx.Client(transport=httpx.MockTransport(responder))
 
 
-def test_toda_chamada_a_deepseek_desliga_o_pensamento(cfg):
-    """28/09/2026: sem isso a deepseek-flash gastava os 500 tokens pensando e
-    devolvia vazio — 3 de 7 intimações ficaram sem resumo, sem erro nenhum."""
+def test_toda_chamada_de_ia_passa_pela_funcao_ia_texto_com_a_chave_do_supabase(cfg):
+    """Nenhum servidor guarda chave de IA: o pedido vai à função ia-texto do
+    Supabase, autenticado com a chave de serviço do projeto."""
     pedidos = []
-    alimentar.analisar_com_ia(cfg, "texto", _deepseek('{"urgency": "baixa", "summary": "ok"}', pedidos=pedidos))
-    alimentar.gerar_resumo(cfg, "texto", _deepseek("Resumo inteiro.", pedidos=pedidos))
-    assert [p["thinking"] for p in pedidos] == [{"type": "disabled"}] * 2
+    alimentar.analisar_com_ia(cfg, "texto", _ia('{"urgency": "baixa", "summary": "ok"}', pedidos=pedidos))
+    alimentar.gerar_resumo(cfg, "texto", _ia("Resumo inteiro.", pedidos=pedidos))
+    assert [req.url.path for req, _ in pedidos] == ["/functions/v1/ia-texto"] * 2
+    assert all(req.headers["apikey"] == "eyJ" for req, _ in pedidos)
+    assert [corpo["json"] for _, corpo in pedidos] == [True, False]
 
 
 def test_resposta_vazia_da_ia_vira_falha_contada(cfg, monkeypatch):
     with pytest.raises(alimentar.RespostaVazia):
-        alimentar.analisar_com_ia(cfg, "texto", _deepseek("", "length"))
+        alimentar.analisar_com_ia(cfg, "texto", _ia(""))
     sup = Supabase({"djen_comunicacoes": [{"id": "i1", "texto": "t"}], "intimation_ai_analysis": [],
                     "holidays": [], "profiles": []})
     ligar(monkeypatch, sup)
@@ -239,8 +242,8 @@ def test_categoria_e_estagio_iguais_ao_datajud_sync():
 
 
 def test_ia_sem_chave_nao_faz_nada(cfg):
-    cfg.deepseek_key = ""
-    assert alimentar.ia(cfg, aplicar=True) == {"pulado": "sem DEEPSEEK_API_KEY"}
+    cfg.supabase_key = ""
+    assert alimentar.ia(cfg, aplicar=True) == {"pulado": "sem SUPABASE_SERVICE_ROLE_KEY (IA)"}
 
 
 def test_ia_nao_avisa_em_dobro_quando_a_rotina_antiga_chegou_antes(cfg, monkeypatch):
