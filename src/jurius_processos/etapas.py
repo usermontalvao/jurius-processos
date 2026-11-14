@@ -125,8 +125,13 @@ def incluir_do_crm(banco: Banco, crm_processos) -> int:
 
 # ── 2. ENRIQUECIMENTO ──────────────────────────────────────────────────────
 def enriquecer(banco: Banco, cfg: Config, somente_pendentes: bool = True, idade_horas: int = 20,
-               limite: int | None = None) -> dict:
-    """Consulta o DataJud em lotes de até 50 números por tribunal (ver datajud.py)."""
+               limite: int | None = None, primeiro: set[str] | None = None,
+               cliente: ClienteDataJud | None = None) -> dict:
+    """Consulta o DataJud em lotes de até 50 números por tribunal (ver datajud.py).
+
+    primeiro: números que vão na frente da fila (os ativos do CRM). Quando o
+    DataJud está ruim a passada tem teto de tempo; o que fica para depois tem
+    de ser o arquivado e o que nem é do CRM, não o processo em andamento."""
     if somente_pendentes:
         # Nunca consultado, deu erro, está velho, ou chegou intimação depois da última consulta.
         linhas = banco.processos(
@@ -136,14 +141,18 @@ def enriquecer(banco: Banco, cfg: Config, somente_pendentes: bool = True, idade_
             "           and c.visto_em > processos.datajud_consultado_em)", (f"-{idade_horas} hours",))
     else:
         linhas = banco.processos()
-    numeros = [r["numero"] for r in linhas][:limite]
+    numeros = [r["numero"] for r in linhas]
+    if primeiro:
+        numeros.sort(key=lambda n: n not in primeiro)  # estável: mantém a ordem dentro de cada grupo
+    numeros = numeros[:limite]
     exec_id = banco.abrir_execucao("enriquecer")
-    cliente = ClienteDataJud(cfg.datajud_key)
-    resumo = {"consultados": 0, "ok": 0, "vazio": 0, "erro": 0, "sem_indice": 0}
+    cliente = cliente or ClienteDataJud(cfg.datajud_key)
+    resumo = {"consultados": 0, "ok": 0, "vazio": 0, "erro": 0, "sem_indice": 0, "adiado": 0}
     for numero, status, inst, erro in cliente.lote(numeros):
         banco.gravar_datajud(numero, status, inst, erro)
-        resumo["consultados"] += 1
         resumo[status] += 1
+        if status != "adiado":
+            resumo["consultados"] += 1
     resumo["consultas_datajud"] = cliente.consultas
     banco.fechar_execucao(exec_id, resumo["erro"] == 0, resumo)
     return resumo

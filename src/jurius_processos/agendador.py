@@ -3,7 +3,8 @@
 Fica dentro do mesmo processo da API para não depender de cron do sistema.
 Cada ciclo:
   - DJEN dos últimos 10 dias (cobre fim de semana e feriado);
-  - DataJud do que recebeu intimação nova ou está há mais de 20 h sem consulta;
+  - DataJud do que recebeu intimação nova ou está há mais de 20 h sem consulta
+    (lotes de 50 por tribunal, ativos primeiro, com teto de tempo — datajud.py);
   - análise de todo o acervo (barata: é CPU local);
   - publicação no Supabase (se JURIUS_PUBLICAR=1).
 """
@@ -69,35 +70,45 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
     _etapa("Lendo clientes e processos do CRM")
     crm, advs, clientes, procs = etapas.carregar_crm(cfg)
     _etapa("Buscando intimações novas e andamentos, analisando e publicando")
+    # Rodízio: ativos todo ciclo, arquivados 1× por dia (ver etapas.rodizio).
+    consultados = etapas.rodizio([p.numero for p in procs if p.numero], etapas.arquivados_conhecidos(banco, procs),
+                                 rodada=int(datetime.now().timestamp() // 7200))
+    # Na fila do DataJud, o processo em andamento vai antes do arquivado.
+    ativos = {p.numero for p in procs if p.numero and (p.status or "") != "arquivado"}
     res = {
         "descobrir": etapas.descobrir(banco, advs, (date.today() - timedelta(days=10)).isoformat()),
-        # Rodízio: ativos todo ciclo, arquivados 1× por dia (ver etapas.rodizio).
         "por_processo": etapas.descobrir_por_processo(
-            banco,
-            etapas.rodizio([p.numero for p in procs if p.numero], etapas.arquivados_conhecidos(banco, procs),
-                           rodada=int(datetime.now().timestamp() // 7200)),
-            (date.today() - timedelta(days=10)).isoformat()),
+            banco, consultados, (date.today() - timedelta(days=10)).isoformat()),
         "do_crm": etapas.incluir_do_crm(banco, procs),
-        "enriquecer": etapas.enriquecer(banco, cfg),
+        "enriquecer": etapas.enriquecer(banco, cfg, primeiro=ativos),
         "analisar": etapas.analisar(banco, clientes, procs, financeiro=crm.financeiro(), agenda=crm.agenda(procs), prazos=crm.prazos(procs)),
     }
     res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar,
                                         cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
-    res["alimentar"] = alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar)
+    # Chegou aqui = o DJEN respondeu por todos os `consultados` (falha levanta
+    # exceção e o ciclo recomeça em 10 min): é deles a marca de sincronização.
+    res["alimentar"] = alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, consultados=set(consultados))
     return res
 
 
-def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list[str] | None = None) -> dict:
+def alimentar_crm(cfg: Config, banco: Banco, procs, aplicar: bool, somente: list[str] | None = None,
+                  consultados: set[str] | None = None) -> dict:
     """As entregas que substituem as rotinas do Supabase, cada uma no seu
     interruptor e na sua execução: uma que falha não impede as outras.
 
     somente: números (sem máscara) — o "Atualizar" de um processo. procs é
-    sempre a lista INTEIRA do CRM (é dela que sai o vínculo das intimações)."""
+    sempre a lista INTEIRA do CRM (é dela que sai o vínculo das intimações).
+
+    consultados: números que o DJEN respondeu agora — ganham `djen_last_sync`
+    mesmo sem intimação nova. No "Atualizar" de um processo, é o próprio."""
     alvo = set(somente) if somente is not None else None
+    if consultados is None and alvo is not None:
+        consultados = alvo
     ids = None if alvo is None else [p.id for p in procs if p.numero in alvo]
     entregas = []
     if cfg.alimentar_intimacoes:
-        entregas.append(("alimentar_intimacoes", lambda: alimentar.intimacoes(banco, cfg, procs, aplicar, somente=alvo)))
+        entregas.append(("alimentar_intimacoes", lambda: alimentar.intimacoes(banco, cfg, procs, aplicar, somente=alvo,
+                                                                          consultados=consultados)))
         if alvo is None:  # auto-cura é do ciclo, não do clique
             entregas.append(("revincular_orfas", lambda: alimentar.revincular_orfas(cfg, procs, aplicar)))
     if cfg.alimentar_datajud:

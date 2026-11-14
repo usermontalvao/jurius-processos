@@ -157,6 +157,30 @@ class Banco:
         return self.con.execute("select * from processos where numero=?", (numero,)).fetchone()
 
     def gravar_datajud(self, numero: str, status: str, instancias: list | None = None, erro: str | None = None):
+        """Consulta que falha ou volta vazia NUNCA apaga a cópia boa.
+
+        Até 13/11/2026 um lote que voltava sem acertos gravava `[]` por cima dos
+        andamentos e punha 'vazio': o processo sumia da entrega ao CRM por 20 h
+        e a análise, sem o DataJud, recalculava a fase (era daí que saía o
+        "desarquivar"). Agora, quem já tem andamentos continua 'ok' com eles:
+          - erro: só anota o motivo; `datajud_consultado_em` não anda, então o
+            processo segue pendente e volta no próximo ciclo;
+          - vazio: anota e anda o relógio (nova tentativa em 20 h, sem martelar).
+        `datajud_erro` preenchido num processo 'ok' = a cópia é a anterior."""
+        if status == "adiado":
+            return
+        if status in ("erro", "vazio"):
+            atual = self.processo(numero)
+            if atual and atual["datajud_status"] == "ok" and (atual["datajud"] or "[]") != "[]":
+                if status == "erro":
+                    self.con.execute("update processos set datajud_erro=? where numero=?",
+                                     (f"cópia anterior mantida — {erro}"[:500], numero))
+                else:
+                    self.con.execute(
+                        "update processos set datajud_erro=?, datajud_consultado_em=? where numero=?",
+                        ("cópia anterior mantida — o DataJud voltou vazio para um processo que já tinha andamentos",
+                         agora(), numero))
+                return
         self.con.execute(
             """update processos set datajud_status=?, datajud_consultado_em=?, datajud_erro=?,
                datajud=coalesce(?, datajud) where numero=?""",

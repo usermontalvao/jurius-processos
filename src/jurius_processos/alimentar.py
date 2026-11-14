@@ -100,11 +100,14 @@ def linha_intimacao(item: dict, numero: str, process_id: str | None, client_id: 
 
 
 def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: date | None = None,
-               somente: set[str] | None = None) -> dict:
+               somente: set[str] | None = None, consultados: set[str] | None = None) -> dict:
     """somente: números (sem máscara) a considerar — o "Atualizar" de UM processo.
     A lista de processos do CRM continua inteira: é ela que dá o vínculo, e sem
     ela a intimação de outro processo entraria órfã e ficaria órfã (o hash já
-    estaria lá quando o ciclo viesse gravá-la direito)."""
+    estaria lá quando o ciclo viesse gravá-la direito).
+
+    consultados: números que o DJEN respondeu NESTE ciclo (busca pelo número do
+    processo). São eles que ganham `djen_last_sync`, com ou sem intimação nova."""
     hoje = hoje or date.today()
     inicio_execucao = _agora()
     corte = (hoje - timedelta(days=JANELA_INTIMACOES_DIAS)).isoformat()
@@ -136,7 +139,10 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
         if proc:
             vinculadas.add(proc.id)
 
-    resumo = {"desde": corte, "novas": len(novas), "processos_tocados": len(vinculadas), "aplicado": aplicar}
+    conferidos = sorted({p.id for p in crm_processos if p.numero and p.numero in (consultados or ())
+                         and (somente is None or p.numero in somente)})
+    resumo = {"desde": corte, "novas": len(novas), "processos_tocados": len(vinculadas),
+              "processos_conferidos": len(conferidos), "aplicado": aplicar}
     if not aplicar:
         return resumo
     for i in range(0, len(novas), 100):
@@ -147,6 +153,15 @@ def intimacoes(banco: Banco, cfg: Config, crm_processos, aplicar: bool, hoje: da
     marcas = {"djen_synced": True, "djen_last_sync": _agora(), "djen_has_data": True}
     for pid in vinculadas:
         http.patch("/processes", params={"id": f"eq.{pid}"}, json=marcas).raise_for_status()
+    # Consulta que deu certo e não trouxe nada TAMBÉM é sincronização. Antes a
+    # marca só andava com intimação nova: em 13/11/2026 a tela mostrava 6 de
+    # 215 ativos "sincronizados" em 24 h com o DJEN consultado 8× no dia para
+    # todos. Só as duas colunas da marca, em lote; `djen_has_data` não é tocada
+    # (quem nunca teve intimação continua sem).
+    carimbo = {"djen_synced": True, "djen_last_sync": marcas["djen_last_sync"]}
+    for i in range(0, len(conferidos), 100):
+        http.patch("/processes", params={"id": f"in.({','.join(conferidos[i:i + 100])})"},
+                   json=carimbo).raise_for_status()
     if somente is None:
         _registrar_sincronizacao(http, inicio_execucao, corte, hoje, len(novas))
     return resumo
@@ -299,12 +314,18 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
         if r["process_code"] not in ultimo or t > ultimo[r["process_code"]]:
             ultimo[r["process_code"]] = t
 
-    novos, lacunas, caches = [], [], []
+    novos, lacunas, caches, atrasados = [], [], [], 0
     for proc in crm_processos:
         if not proc.numero or not proc.codigo or (somente is not None and proc.numero not in somente):
             continue
         r = banco.processo(proc.numero)
         if not r or r["datajud_status"] != "ok" or not r["datajud"]:
+            continue
+        # A última consulta falhou e a cópia é a anterior (banco.gravar_datajud):
+        # nada de novo a entregar, e o carimbo "cópia de" não anda — a tela
+        # mostra a idade verdadeira até o DataJud responder.
+        if r["datajud_erro"]:
+            atrasados += 1
             continue
         inst = json.loads(r["datajud"])
         com, sem = separar_movimentos(proc, inst, existentes, ultimo.get(proc.codigo))
@@ -313,7 +334,7 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
         caches.append((proc.id, cache_da_linha_do_tempo(inst)))
 
     resumo = {"movimentos_novos": len(novos), "lacunas_sem_aviso": len(lacunas), "caches": len(caches),
-              "aplicado": aplicar}
+              "copia_anterior_mantida": atrasados, "aplicado": aplicar}
     if not aplicar:
         return resumo
     # Primeiro o histórico, calado; depois o novo, com aviso. Na ordem inversa

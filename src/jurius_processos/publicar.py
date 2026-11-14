@@ -1,13 +1,19 @@
 """Publicação no Supabase: o CRM só LÊ o que sai daqui.
 
-Três movimentos, nesta ordem:
+Dois movimentos, nesta ordem:
   1. upsert de todo o acervo em `acervo_processos` (a aba Acervo lê dela);
   2. [desligado por padrão] cadastro automático em `processes` do que é de
-     cliente cadastrado e ainda não estava no CRM (vínculo `nome_exato`);
-  3. [desligado por padrão] `processes.status` dos já cadastrados.
+     cliente cadastrado e ainda não estava no CRM (vínculo `nome_exato`).
 
-Sem os dois interruptores (JURIUS_CADASTRAR_AUTO, JURIUS_ATUALIZAR_STATUS) o
-cérebro só escreve no acervo: importar é decisão de quem usa o CRM.
+`processes.status` NÃO é deste serviço — nunca mais (13/11/2026). Com
+JURIUS_ATUALIZAR_STATUS=1 o publicar "corrigia" a cada ciclo o que o cron do
+CRM (fases-pelos-andamentos) arquivava: arquivado→cumprimento→arquivado, 55
+desarquivamentos num dia. A regra do escritório é nunca desarquivar sozinho.
+O que a análise acha do estágio continua saindo, como SUGESTÃO, em
+`acervo_processos.status_crm`; o interruptor antigo é aceito e ignorado.
+
+Sem JURIUS_CADASTRAR_AUTO o cérebro só escreve no acervo: importar é decisão
+de quem usa o CRM.
 
 Por padrão roda em ensaio (`aplicar=False`): calcula tudo e devolve o plano
 sem gravar nada. Precisa da migration sql/001_acervo.sql aplicada.
@@ -133,18 +139,18 @@ def status_e_novidade(desde: str | None, hoje: date | None = None) -> bool:
 def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = False,
              somente: list[str] | None = None, cadastrar_auto: bool = False,
              atualizar_status: bool = False, arquivados_por_pessoa: set[str] | None = None) -> dict:
-    if atualizar_status and arquivados_por_pessoa is None:
-        from .crm import CRM
-        arquivados_por_pessoa = CRM(url, chave).arquivados_por_pessoa()
     plano = planejar(banco, crm_processos, somente, arquivados_por_pessoa)
     if not cadastrar_auto:
         plano["cadastrar"] = []
-    if not atualizar_status:
-        plano["status"] = []
+    # `atualizar_status` é aceito e IGNORADO: status de `processes` não é deste
+    # serviço (ver o cabeçalho). O plano vira só contagem — a sugestão em si
+    # vai em acervo_processos.status_crm.
+    divergem = len(plano["status"]) + len(plano["conferir"])
+    plano["status"] = []
     resumo = {"acervo": len(plano["acervo"]), "cadastrar": len(plano["cadastrar"]),
-              "status": len(plano["status"]), "conferir": len(plano["conferir"]), "aplicado": aplicar}
+              "status": 0, "status_sugerido_diferente_do_crm": divergem,
+              "conferir": len(plano["conferir"]), "aplicado": aplicar}
     if not aplicar:
-        resumo["amostra_status"] = plano["status"][:10]
         resumo["amostra_conferir"] = plano["conferir"][:10]
         return resumo
 
@@ -179,21 +185,4 @@ def publicar(banco: Banco, crm_processos, url: str, chave: str, aplicar: bool = 
                   headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
                   json=linhas[i:i + 200]).raise_for_status()
 
-    for s in plano["status"]:
-        # Condição dupla: não sobrescreve se alguém marcou manual entre a leitura
-        # e agora, nem se o status mudou nesse meio-tempo.
-        extra = {} if status_e_novidade(s.get("desde")) else SEM_AVISO
-        r = http.patch("/processes", params={"id": f"eq.{s['id']}", "status_manual": "is.false",
-                                             "status": f"eq.{s['de']}"},
-                       headers={"Prefer": "return=representation", **extra}, json={"status": s["para"]})
-        r.raise_for_status()
-        if not r.json():
-            continue
-        # Todo status que o cérebro muda fica registrado: é o histórico para
-        # conferir e o caminho para desfazer (o `de` está aqui).
-        http.post("/acervo_eventos", json={
-            "numero": s["numero"], "tipo": "status_corrigido", "process_id": s["id"],
-            "mensagem": f"Status do processo {cnj.formatar(s['numero'])} passou de "
-                        f"'{s['de']}' para '{s['para']}' pela análise do andamento.",
-        }).raise_for_status()
     return resumo
