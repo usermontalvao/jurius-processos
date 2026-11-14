@@ -15,7 +15,7 @@ from .banco import Banco
 from .config import Config
 from .crm import CRM
 from .datajud import ClienteDataJud
-from .djen import Advogado, ClienteDJEN, meses
+from .djen import Advogado, ClienteDJEN, ErroGeobloqueio, meses
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +86,10 @@ def arquivados_conhecidos(banco: Banco, crm_processos) -> set[str]:
     return out
 
 
+# Erros seguidos que indicam DJEN fora do ar (não um processo problemático).
+LIMITE_FALHAS_SEGUIDAS = 8
+
+
 def descobrir_por_processo(banco: Banco, numeros: list[str], inicio: str, fim: date | None = None,
                            djen: ClienteDJEN | None = None) -> dict:
     """Intimações de cada processo do CRM pelo NÚMERO, não só as endereçadas ao advogado.
@@ -98,12 +102,30 @@ def descobrir_por_processo(banco: Banco, numeros: list[str], inicio: str, fim: d
     djen = djen or ClienteDJEN()
     fim = fim or date.today()
     exec_id = banco.abrir_execucao("descobrir_por_processo")
-    resumo = {"inicio": inicio, "processos": 0, "intimacoes_novas": 0}
+    resumo = {"inicio": inicio, "processos": 0, "intimacoes_novas": 0, "falhas": 0}
+    respondidos: list[str] = []
+    seguidas = 0
     try:
         for numero in numeros:
-            for item in djen.do_processo(numero, inicio, fim.isoformat()):
-                if banco.gravar_comunicacao(item, numero, "processo"):
-                    resumo["intimacoes_novas"] += 1
+            try:
+                for item in djen.do_processo(numero, inicio, fim.isoformat()):
+                    if banco.gravar_comunicacao(item, numero, "processo"):
+                        resumo["intimacoes_novas"] += 1
+            except ErroGeobloqueio:
+                raise  # nada vai funcionar: o ciclo inteiro tem de parar e avisar
+            except Exception as e:
+                # Um processo com erro (ex.: 500 do DJEN para ESTE número) é
+                # pulado e volta no próximo ciclo. Antes, um único 500 derrubava
+                # a etapa e nenhum dos ~200 ganhava a marca de sincronizado.
+                resumo["falhas"] += 1
+                resumo["ultima_falha"] = f"{numero}: {str(e)[:160]}"
+                seguidas += 1
+                if seguidas >= LIMITE_FALHAS_SEGUIDAS:
+                    raise RuntimeError(
+                        f"DJEN fora do ar: {seguidas} processos seguidos com erro (último: {resumo['ultima_falha']})")
+                continue
+            seguidas = 0
+            respondidos.append(numero)
             resumo["processos"] += 1
         banco.fechar_execucao(exec_id, True, resumo)
     except Exception as e:
@@ -111,6 +133,8 @@ def descobrir_por_processo(banco: Banco, numeros: list[str], inicio: str, fim: d
         banco.fechar_execucao(exec_id, False, resumo)
         raise
     resumo["pedidos_djen"] = djen.pedidos
+    # Fora do registro da execução (lista grande): só quem respondeu ganha a marca.
+    resumo["_respondidos"] = respondidos
     return resumo
 
 

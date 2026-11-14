@@ -111,6 +111,14 @@ class ClienteDJEN:
                 time.sleep(espera)
                 espera *= 2
                 continue
+            if r.status_code >= 500 and tentativa < 2:
+                # 500/502/503 avulso do DJEN (comum à noite): tenta de novo antes
+                # de desistir deste pedido. Só 3 tentativas: o processo que
+                # insistir em 5xx é pulado pelo chamador, não trava o ciclo.
+                log.info("DJEN %s — nova tentativa em %ss", r.status_code, espera)
+                time.sleep(espera)
+                espera *= 2
+                continue
             if r.status_code == 403:
                 raise ErroGeobloqueio(
                     "O DJEN recusou o acesso (403). O servidor precisa sair para a internet por um IP do Brasil.")

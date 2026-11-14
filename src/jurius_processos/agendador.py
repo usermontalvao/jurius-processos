@@ -85,9 +85,10 @@ def ciclo(cfg: Config, banco: Banco) -> dict:
     }
     res["publicar"] = publicar.publicar(banco, procs, cfg.supabase_url, cfg.supabase_key, aplicar=cfg.publicar,
                                         cadastrar_auto=cfg.cadastrar_auto, atualizar_status=cfg.atualizar_status)
-    # Chegou aqui = o DJEN respondeu por todos os `consultados` (falha levanta
-    # exceção e o ciclo recomeça em 10 min): é deles a marca de sincronização.
-    res["alimentar"] = alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, consultados=set(consultados))
+    # Só quem o DJEN respondeu neste ciclo ganha a marca de sincronização; o
+    # processo pulado por erro volta no próximo ciclo sem marca nova.
+    respondidos = set(res["por_processo"].pop("_respondidos", consultados))
+    res["alimentar"] = alimentar_crm(cfg, banco, procs, aplicar=cfg.publicar, consultados=respondidos)
     return res
 
 

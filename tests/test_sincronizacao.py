@@ -184,3 +184,34 @@ def test_publicar_nunca_escreve_em_processes(tmp_path, monkeypatch):
     assert {e[1] for e in sup.escritas} == {"acervo_processos"}
     [linha] = sup.escritas[0][3]
     assert linha["status_crm"] == "cumprimento"  # a sugestão continua saindo, no acervo
+
+
+# ── 13/11/2026, 22:40: um 500 do DJEN para UM processo derrubava a etapa inteira ──
+def _djen_falso(falha_para: set[str], status: int = 500):
+    from jurius_processos import djen as mod
+    def responder(req: httpx.Request):
+        numero = req.url.params.get("numeroProcesso")
+        if numero in falha_para:
+            return httpx.Response(status, json={"erro": "x"})
+        return httpx.Response(200, json={"items": [], "count": 0})
+    return mod.ClienteDJEN(httpx.Client(transport=httpx.MockTransport(responder)))
+
+
+def test_um_processo_com_500_nao_derruba_os_outros(tmp_path, monkeypatch):
+    from jurius_processos import djen as mod
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    b = Banco(tmp_path / "d.sqlite3")
+    numeros = [f"100000{i:02d}20268110001" for i in range(10)]
+    r = etapas.descobrir_por_processo(b, numeros, "2026-11-03", date(2026, 11, 13), djen=_djen_falso({numeros[3]}))
+    assert r["falhas"] == 1
+    assert r["processos"] == 9
+    assert numeros[3] not in r["_respondidos"] and len(r["_respondidos"]) == 9
+
+
+def test_djen_fora_do_ar_para_o_ciclo(tmp_path, monkeypatch):
+    from jurius_processos import djen as mod
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    b = Banco(tmp_path / "e.sqlite3")
+    numeros = [f"100000{i:02d}20268110001" for i in range(12)]
+    with pytest.raises(RuntimeError, match="fora do ar"):
+        etapas.descobrir_por_processo(b, numeros, "2026-11-03", date(2026, 11, 13), djen=_djen_falso(set(numeros), 503))
