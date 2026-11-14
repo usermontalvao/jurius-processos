@@ -304,7 +304,12 @@ def datajud(banco: Banco, cfg: Config, crm_processos, aplicar: bool, somente: se
     ultimo: dict[str, datetime] = {}
     existentes: set = set()
     codigos = None if somente is None else {p.codigo for p in crm_processos if p.numero in somente}
-    for r in _tudo(http, "datajud_movimentos", "process_code,codigo,data_hora"):
+    # Só o que o PRÓPRIO DataJud gravou. O CRM também grava andamentos lidos do
+    # e-mail do PJe (fonte='email', codigo negativo), que chegam antes; contá-los
+    # aqui empurraria o "último" para a frente e o mesmo andamento, quando o
+    # DataJud o trouxesse, viraria lacuna calada — o cliente nunca seria avisado.
+    for r in _tudo(http, "datajud_movimentos", "process_code,codigo,data_hora",
+                   {"fonte": "eq.datajud"}):
         if not r.get("process_code") or not r.get("data_hora"):
             continue
         if codigos is not None and r["process_code"] not in codigos:

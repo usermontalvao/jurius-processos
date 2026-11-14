@@ -21,7 +21,13 @@ class Supabase:
     def __call__(self, req: httpx.Request):
         tabela = req.url.path.rsplit("/", 1)[-1]
         if req.method == "GET":
-            return httpx.Response(200, json=self.tabelas.get(tabela, []))
+            linhas = self.tabelas.get(tabela, [])
+            # Filtros `col=eq.valor` do PostgREST; linha sem a coluna usa o
+            # default do banco (fonte nasce 'datajud').
+            fonte = req.url.params.get("fonte", "")
+            if fonte.startswith("eq."):
+                linhas = [l for l in linhas if l.get("fonte", "datajud") == fonte[3:]]
+            return httpx.Response(200, json=linhas)
         corpo = json.loads(req.content or b"null")
         self.escritas.append((req.method, tabela, dict(req.url.params), corpo, req.headers.get("x-jurius-sem-aviso")))
         if "return=representation" in req.headers.get("prefer", ""):
@@ -348,3 +354,20 @@ def test_reanalise_refaz_a_antiga_com_compromisso_e_nao_avisa_de_novo(cfg, monke
     assert patch[3]["compromisso"]["data"] == "2026-11-23" and patch[3]["analise_versao"] == alimentar.analise_mod.VERSAO
     assert "created_at" not in patch[3]
     assert not any(e[1] == "user_notifications" for e in sup.escritas)
+
+
+def test_andamento_do_email_nao_cala_o_aviso_do_datajud(tmp_path, cfg, monkeypatch):
+    # O e-mail do PJe gravou antes (fonte='email', data posterior a tudo). O
+    # mesmo andamento chegando pelo DataJud tem de continuar sendo NOVO (com
+    # aviso ao cliente), não lacuna calada.
+    b = Banco(tmp_path / "b.sqlite3")
+    n = "2" * 20
+    _datajud(b, n)
+    cod = "2222222-22.2222.2.22.2222"
+    sup = Supabase({"datajud_movimentos": [
+        {"process_code": cod, "codigo": 848, "data_hora": "2026-09-10T10:00:00+00:00"},
+        {"process_code": cod, "codigo": 1, "data_hora": "2026-09-15T00:00:00+00:00"},
+        {"process_code": cod, "codigo": -987, "data_hora": "2027-01-01T00:00:00+00:00", "fonte": "email"}]})
+    ligar(monkeypatch, sup)
+    r = alimentar.datajud(b, cfg, [proc("p2", n, cod)], aplicar=True)
+    assert r["movimentos_novos"] == 1 and r["lacunas_sem_aviso"] == 1
